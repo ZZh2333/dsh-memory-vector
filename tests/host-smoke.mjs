@@ -526,6 +526,39 @@ if (hasKey) {
 }
 
 // 模拟插件卸载：释放索引句柄，否则临时目录里的 sqlite 还占着句柄
+/* ---------- 历史回填（预览 → 确认 → 落库 → 幂等） ---------- */
+
+const preview = await call('GET', '/backfill')
+assert.equal(preview.body.ok, true, JSON.stringify(preview.body))
+assert.ok(preview.body.sessions >= 1, '应至少有一场可回填')
+assert.ok(preview.body.estimateChunks >= 1)
+
+const noConfirm = await call('POST', '/backfill', {})
+assert.equal(noConfirm.status, 400, '没有 confirm 不该开始')
+
+const chunksBefore = (await call('GET', '/state')).body.stats.chunks
+const kickoff = await call('POST', '/backfill', { confirm: true })
+assert.equal(kickoff.body.ok, true, JSON.stringify(kickoff.body))
+
+let backfill = null
+for (let index = 0; index < 60; index += 1) {
+  backfill = (await call('GET', '/state')).body.backfill
+  if (backfill.running !== true) break
+  await new Promise((resolve) => setTimeout(resolve, 200))
+}
+assert.equal(backfill.running, false, '回填应在超时内结束')
+assert.ok(backfill.sessions >= 1, JSON.stringify(backfill))
+assert.equal(backfill.error, null)
+
+const chunksAfter = (await call('GET', '/state')).body.stats.chunks
+assert.ok(chunksAfter > chunksBefore, `回填后块数应增加：${chunksBefore} → ${chunksAfter}`)
+console.log(`ok · 历史回填（${backfill.sessions} 场 / 块数 ${chunksBefore}→${chunksAfter}）`)
+
+const again = await call('GET', '/backfill')
+assert.equal(again.body.sessions, 0, '已回填的会话不应再出现在预览里')
+assert.ok(again.body.done.sessions >= 1)
+console.log('ok · 回填幂等（已处理的会话不再计入）')
+
 disposers.forEach((dispose) => dispose())
 await new Promise((resolve) => setTimeout(resolve, 100))
 rmSync(HOME, { recursive: true, force: true })

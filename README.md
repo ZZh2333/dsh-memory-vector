@@ -3,7 +3,7 @@
 给 DeepSeek Harness 补上**五层记忆链的向量层**：对话原文落盘、切块向量化、关键词与向量混合召回。
 接的是火山方舟 Agent Plan 的 `doubao-embedding-vision`（`/api/plan/v3/embeddings`）。
 
-> 当前版本 **0.7.0**：L0 原文库 + 混合检索 + 每轮自动回想（P1）+ L1 跨会话桥接（P2）+ L2 长期权重（P3）+ L4 自我叙述（P4）+ **L3 交付物索引（P5）** + 设置页 + 多套向量化模型可切换。
+> 当前版本 **0.8.0**：L0 原文库 + 混合检索 + 每轮自动回想（P1）+ L1 跨会话桥接（P2）+ L2 长期权重（P3）+ L4 自我叙述（P4）+ L3 交付物索引（P5）+ **历史回填** + 设置页 + 多套向量化模型可切换。
 
 ## 它做什么
 
@@ -38,6 +38,10 @@ systemPrompt.context('memory-vector:bridge') ◄── sessionQuery.readSurface(
   `present` 记「交付」。只存路径 + `sessionId#turn` + 时间，**不读文件内容、不出本机**。
   `deliverable_search` 查；默认只看当前工作区，跨区要显式 `all: true`；
   **默认只对主会话开放**，子智能体调用会被拒。
+- **历史回填**：设置页「预览开销」→「开始回填」。把插件装上之前的旧会话按轮聚块补进原文库，
+  让检索有时间纵深、权重有更早的锚点。两条硬约束：**先预览再确认**（要花向量化 token）、
+  **处理过的会话记账不重复**（`backfill_sessions` 表）。场次与块数都有上限。
+  回填不恢复 `hits`——历史上没人检索过，补进来的块按创建时间起算衰减，这正是艾宾浩斯该有的样子。
 - **存储**：`<DSH_HOME>/storages/memory-vector/index.sqlite`，正文和向量同一行，检索路径永远对得上。
 - **中文检索**：FTS5 的 `unicode61` 会把整句中文当一个 token，所以额外存一列 CJK 重叠二元组，
   `记忆检索` → `记忆 忆检 检索`，否则中文关键词等于搜不到。
@@ -112,6 +116,7 @@ plugin_manager  action: install_bundle  target: <本目录绝对路径>
 | 组 | 关键参数 | 说明 |
 |---|---|---|
 | L0 采集 | `ingestEnabled` / `minTurnChars` / `maxChunkChars` / `excludeWorkspaces` | 采集开关与切块粒度 |
+| 历史回填 | `backfillMaxSessions` / `backfillMaxChunks` / `backfillOnlyWorkspace` | 一次补多少、补哪些 |
 | 检索 | `topK` / `minScore` / `maxHitsPerSession` / `contextChars` / `hybrid` / `injectEnabled` / `injectChars` | 召回条数、预算、自动回想开关 |
 | 向量模型 | `embeddingProviders[]` / `embeddingActive` | 多套并存，逐套 `model` / `dimensions` / `baseUrl` / `apiKeyRef` / `timeoutMs` / `batchSize` |
 | L1 桥接 | `bridgeEnabled` / `bridgeScope` / `bridgeDays` / `bridgeMessages` / `bridgeChars` | 同工作区最近一场（或 N 天内最多三场）的尾巴 |

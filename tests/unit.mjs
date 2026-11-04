@@ -28,6 +28,7 @@ import {
   validateDraft
 } from '../lib/selfnote.js'
 import { dirOf, normalizePath, pathsFromToolCall, relativeTo, renderList } from '../lib/deliverables.js'
+import { collectTurnChunks, estimateTokens, pickSessions } from '../lib/backfill.js'
 
 /* ---------- 事件抽取 ---------- */
 
@@ -435,5 +436,44 @@ assert.match(listing, /session-abc#4/)
 assert.match(listing, /报表/)
 assert.ok(!listing.includes('D:\\projects\\demo\\report.md'), '同工作区应显示相对路径')
 console.log('ok · 交付物列表渲染（相对路径 + 出处 + 描述）')
+
+/* ---------- 历史回填：按轮聚合 + 挑会话 ---------- */
+
+const fakeTextOf = (event) =>
+  event.type === 'user/message'
+    ? { role: 'user', text: event.data.content[0].text }
+    : event.type === 'assistant/message'
+      ? { role: 'assistant', text: event.data.message.content[0].text }
+      : null
+
+const surfaceEvents = [
+  { type: 'user/message', seq: 1, data: { turn: 1, content: [{ type: 'text', text: '把索引改成分片，每片三千字' }] } },
+  { type: 'assistant/message', seq: 2, data: { turn: 1, message: { content: [{ type: 'text', text: '改完了，另外加了 FTS 混合检索' }] } } },
+  { type: 'turn/end', seq: 3, data: { turn: 1 } },
+  { type: 'user/message', seq: 4, data: { turn: 2, content: [{ type: 'text', text: '短' }] } },
+  { type: 'assistant/message', seq: 5, data: { turn: 3, message: { content: [{ type: 'text', text: '第三轮：权重快照改成一天一次，半衰期二十一天' }] } } }
+]
+const turnChunks = collectTurnChunks(surfaceEvents, { textOf: fakeTextOf, maxChars: 3000, minChars: 24 })
+assert.equal(turnChunks.length, 2, JSON.stringify(turnChunks))
+assert.match(turnChunks[0].text, /我：把索引改成分片/)
+assert.match(turnChunks[0].text, /你：改完了/)
+assert.equal(turnChunks[0].turn, 1)
+assert.equal(turnChunks[1].turn, 3, '太短的单轮要丢掉')
+console.log('ok · 回填按轮聚合（user+assistant 拼块 / 过短的丢掉）')
+
+const pickable = pickSessions(
+  [
+    { header: { id: 's-old', cwd: 'D:\\w', createdAt: 1 } },
+    { header: { id: 's-new', cwd: 'D:\\w', createdAt: 9 } },
+    { header: { id: 's-done', cwd: 'D:\\w', createdAt: 8 } },
+    { header: { id: 's-sub', cwd: 'D:\\w', createdAt: 7, origin: 'subagent' } },
+    { header: { id: 's-other', cwd: 'D:\\other', createdAt: 6 } }
+  ],
+  { done: new Set(['s-done']), cwd: 'D:\\w', onlyWorkspace: true, limit: 10 }
+)
+assert.deepEqual(pickable.map((session) => session.id), ['s-new', 's-old'])
+assert.equal(pickSessions(pickable, { cwd: 'D:\\w', onlyWorkspace: true, limit: 0 }).length, 0)
+assert.equal(estimateTokens([{ text: 'a'.repeat(160) }]), 100)
+console.log('ok · 回填选场（跳过已处理 / 子会话 / 别的工作区 / 新的优先）')
 
 console.log('\n全部单测通过')
