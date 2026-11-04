@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Memory Vector",
+    "description": "Five-tier memory chain, vector layer: raw turn store on disk plus hybrid keyword/embedding recall."
+  }
+}
