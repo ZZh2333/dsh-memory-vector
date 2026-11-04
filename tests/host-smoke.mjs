@@ -20,6 +20,31 @@ let handler = null
 const tools = []
 const disposers = []
 const handlers = new Map()
+const promptContexts = []
+const fakeSessions = [{ header: { id: 'prev-0001', cwd: 'D:\\projects\\old', createdAt: Date.now() - 60000 } }]
+const sessionQuery = {
+  async listSessions() {
+    return fakeSessions
+  },
+  async readSurface(id) {
+    return {
+      events: [
+        {
+          type: 'user/message',
+          seq: 1,
+          time: Date.now() - 50000,
+          data: { content: [{ type: 'text', text: '上一场说的：把索引改成分片' }], source: { kind: 'user' } }
+        },
+        {
+          type: 'assistant/message',
+          seq: 2,
+          time: Date.now() - 49000,
+          data: { message: { content: [{ type: 'text', text: `好，${id} 已经改完。` }] } }
+        }
+      ]
+    }
+  }
+}
 const ctx = {
   logger: { warn() {}, info() {}, error() {} },
   on(event, fn) {
@@ -34,13 +59,30 @@ const ctx = {
     return () => {}
   },
   get(service) {
-    if (service !== 'credentials') return undefined
-    return {
-      async resolve(ref) {
-        const value = process.env[ref]
-        return typeof value === 'string' && value !== '' ? { value, source: 'env' } : undefined
+    if (service === 'credentials') {
+      return {
+        async resolve(ref) {
+          const value = process.env[ref]
+          return typeof value === 'string' && value !== '' ? { value, source: 'env' } : undefined
+        }
       }
     }
+    if (service === 'sessionQuery') return sessionQuery
+    if (service === 'systemPrompt') {
+      return {
+        context(spec) {
+          promptContexts.push(spec)
+          return () => {}
+        },
+        section() {
+          return () => {}
+        },
+        getContextOrder() {
+          return 0
+        }
+      }
+    }
+    return undefined
   },
   tools: {
     register(definition) {
@@ -64,6 +106,7 @@ assert.equal(tools.length, 1)
 assert.equal(tools[0].name, 'memory_search')
 assert.equal(typeof tools[0].output.render, 'function')
 assert.ok(handlers.has('agent/pre-step'), 'pre-step 钩子没注册')
+assert.ok(promptContexts.some((spec) => spec.name === 'memory-vector:bridge'), '桥接上下文没注册')
 assert.ok(handlers.has('session/event'), '采集钩子没注册')
 console.log('ok · 插件装载（工具 + API 路由 + pre-step 钩子）')
 
@@ -235,6 +278,55 @@ if (hasKey) {
 } else {
   console.log('skip · 没有 ARK_CODE_LATEST_API_KEY，跳过自动回想与探针')
 }
+
+/* ---------- P2：L1 跨会话桥接（不需要凭证） ---------- */
+
+const bridgeSpec = promptContexts.find((spec) => spec.name === 'memory-vector:bridge')
+const reader = { agent: { session: { id: 'reader-1', header: { cwd: 'D:\\projects\\old' } } } }
+
+assert.equal(bridgeSpec.text(reader), '', '默认关闭时不注入')
+console.log('ok · 桥接默认关闭')
+
+const waitFor = async (check, timeoutMs = 4000) => {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    if (check()) return true
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  return false
+}
+
+const enabled = await call('POST', '/settings', {
+  settings: { ...(await call('GET', '/state')).body.settings, bridgeEnabled: true }
+})
+assert.equal(enabled.body.settings.bridgeEnabled, true)
+assert.ok(await waitFor(() => bridgeSpec.text(reader) !== ''), '开启后应能读到上一场会话的尾巴')
+
+const bridged = bridgeSpec.text(reader)
+assert.match(bridged, /【前面聊过的】/)
+assert.match(bridged, /上一场说的：把索引改成分片/)
+assert.ok(bridged.length <= enabled.body.settings.bridgeChars + 200, `预算内：${bridged.length}`)
+console.log(`ok · 桥接注入（${bridged.length} 字，来自 prev-0001）`)
+
+// 冻结：同一会话第二次装配必须完全一致（否则前缀缓存会失效）
+assert.equal(bridgeSpec.text(reader), bridged)
+console.log('ok · 同一会话内容冻结（缓存安全）')
+
+// 缓存里含自己 → 宁可不注入
+const selfReader = { agent: { session: { id: 'prev-0001', header: { cwd: 'D:\\projects\\old' } } } }
+assert.equal(bridgeSpec.text(selfReader), '', '不能把当前会话自己当"上一场"')
+console.log('ok · 自身排除')
+
+// 没有对应工作区的会话 → 空
+const stranger = { agent: { session: { id: 'reader-2', header: { cwd: 'D:\\nowhere' } } } }
+assert.equal(bridgeSpec.text(stranger), '')
+console.log('ok · 无同工作区历史时静默')
+
+const bridgeHealth = (await call('GET', '/state')).body.health
+assert.ok(bridgeHealth.bridgeChars > 0)
+assert.deepEqual(bridgeHealth.bridgeSessions, ['prev-0001'])
+assert.equal(bridgeHealth.bridgeFrozen, 1)
+console.log(`ok · health 记录桥接（${bridgeHealth.bridgeChars} 字 / 冻结 ${bridgeHealth.bridgeFrozen} 场）`)
 
 if (hasKey) {
   const offline = await call('POST', '/probe', {

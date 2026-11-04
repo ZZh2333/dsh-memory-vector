@@ -7,6 +7,7 @@ import assert from 'node:assert/strict'
 import { eventText, splitChunk } from '../lib/index.js'
 import { ftsQuery, ftsText } from '../lib/store.js'
 import { normalize, normalizeProviders, activeProvider, DEFAULTS, DEFAULT_PROVIDER } from '../lib/settings.js'
+import { messageOf, tailOf, renderBridge, collectBridge } from '../lib/bridge.js'
 
 /* ---------- 事件抽取 ---------- */
 
@@ -132,5 +133,87 @@ assert.equal(ftsQuery(''), '')
 assert.ok(ftsQuery('Agent Plan').includes('"Agent"'))
 assert.ok(ftsQuery('a"b').includes('""'))
 console.log('ok · 中文二元组与查询转义')
+
+/* ---------- L1 桥接 ---------- */
+
+const ev = (type, data) => ({ type, seq: 1, time: Date.now(), data })
+
+assert.deepEqual(messageOf(ev('user/message', { role: 'user', content: [{ type: 'text', text: '早' }], source: { kind: 'user' } })), {
+  role: 'user',
+  text: '早',
+  seq: 1
+})
+assert.equal(messageOf(ev('user/message', { content: [{ type: 'text', text: 'x' }], source: { kind: 'compact-checkpoint' } })), null)
+assert.equal(messageOf(ev('user/message', { content: [{ type: 'text', text: 'x' }], source: { kind: 'memory-vector' } })), null)
+assert.equal(messageOf(ev('assistant/message', { message: { content: [{ type: 'text', text: '嗯' }] } })).role, 'assistant')
+assert.equal(messageOf(ev('tool/result', {})), null)
+console.log('ok · 桥接消息筛选（压缩摘要、插件注入、工具结果都不进）')
+
+const events = [
+  ev('user/message', { content: [{ type: 'text', text: '第一句' }], source: { kind: 'user' } }),
+  ev('assistant/message', { message: { content: [{ type: 'text', text: '第二句' }] } }),
+  ev('user/message', { content: [{ type: 'text', text: '<compacted-summary>旧摘要</compacted-summary>' }], source: { kind: 'user' } }),
+  ev('user/message', { content: [{ type: 'text', text: '第三句' }], source: { kind: 'user' } })
+]
+const tail = tailOf(events, 10)
+assert.deepEqual(tail.map((item) => item.text), ['第一句', '第二句', '第三句'], '压缩摘要应被剔除')
+assert.deepEqual(tailOf(events, 1).map((item) => item.text), ['第三句'])
+console.log('ok · 取尾巴（截断 + 剔除压缩摘要）')
+
+const rendered = renderBridge({
+  cwd: 'D:\\projects\\demo',
+  sessions: [
+    { id: 'aaaa1111', createdAt: Date.now() - 60000, messages: [{ role: 'user', text: '旧问题' }, { role: 'assistant', text: '旧回答' }] },
+    { id: 'bbbb2222', createdAt: Date.now(), messages: [{ role: 'user', text: '新问题' }] }
+  ],
+  budget: 500
+})
+assert.match(rendered, /【前面聊过的】/)
+assert.match(rendered, /bbbb2222/)
+assert.ok(rendered.indexOf('旧问题') < rendered.indexOf('新问题'), '旧的在前，新的在后')
+assert.equal(renderBridge({ cwd: '', sessions: [], budget: 500 }), '')
+
+const tight = renderBridge({
+  cwd: '',
+  sessions: [{ id: 'cccc3333', createdAt: Date.now(), messages: [{ role: 'user', text: '啊'.repeat(2000) }] }],
+  budget: 120,
+  perMessage: 400
+})
+assert.ok(tight.length < 400, `预算应生效，实际 ${tight.length}`)
+console.log('ok · 桥接渲染（顺序 + 预算 + 空态）')
+
+// 假的 sessionQuery：两场会话 + 一场子智能体
+const now = Date.now()
+const fakeQuery = {
+  async listSessions() {
+    return [
+      { header: { id: 'new-1', cwd: 'D:\\w', createdAt: now } },
+      { header: { id: 'old-1', cwd: 'D:\\w', createdAt: now - 3600000 } },
+      { header: { id: 'sub-1', cwd: 'D:\\w', createdAt: now, origin: 'subagent' } },
+      { header: { id: 'other-1', cwd: 'D:\\elsewhere', createdAt: now } }
+    ]
+  },
+  async readSurface(id) {
+    return {
+      events: [ev('user/message', { content: [{ type: 'text', text: `来自 ${id}` }], source: { kind: 'user' } })]
+    }
+  }
+}
+
+const latest = await collectBridge({ sessionQuery: fakeQuery, cwd: 'D:\\w', currentSessionId: '', scope: 'workspace-latest', days: 7, maxMessages: 12, budget: 1200 })
+assert.deepEqual(latest.sessions, ['new-1'], 'workspace-latest 只取最近一场同工作区会话')
+assert.match(latest.text, /来自 new-1/)
+
+const excluded = await collectBridge({ sessionQuery: fakeQuery, cwd: 'D:\\w', currentSessionId: 'new-1', scope: 'workspace-latest', days: 7, maxMessages: 12, budget: 1200 })
+assert.deepEqual(excluded.sessions, ['old-1'], '应排除自己')
+
+const recent = await collectBridge({ sessionQuery: fakeQuery, cwd: 'D:\\w', currentSessionId: '', scope: 'recent-days', days: 7, maxMessages: 12, budget: 2400 })
+assert.ok(recent.sessions.includes('new-1') && recent.sessions.includes('old-1'))
+assert.ok(!recent.sessions.includes('sub-1'), '子智能体会话不桥接')
+assert.ok(!recent.sessions.includes('other-1'), 'recent-days 也只取同工作区')
+
+const noService = await collectBridge({ sessionQuery: undefined, cwd: 'D:\\w', currentSessionId: '', scope: 'workspace-latest', days: 7, maxMessages: 12, budget: 1200 })
+assert.deepEqual(noService, { text: '', sessions: [] })
+console.log('ok · 桥接采集（排除自己 / 过滤子会话 / 无服务时静默）')
 
 console.log('\n全部单测通过')
