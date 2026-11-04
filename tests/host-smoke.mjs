@@ -22,9 +22,22 @@ const disposers = []
 const handlers = new Map()
 const promptContexts = []
 const fakeSessions = [{ header: { id: 'prev-0001', cwd: 'D:\\projects\\old', createdAt: Date.now() - 60000 } }]
+const ANCHOR_TEXT = '索引改成分片，每片 3000 字，检索先查 FTS 再算余弦。'
 const sessionQuery = {
   async listSessions() {
     return fakeSessions
+  },
+  async readEvent(request) {
+    const seq = Number(request.seq)
+    if (seq < 1 || seq > 2) throw new Error(`event not found: ${seq}`)
+    return {
+      target: {
+        type: 'user/message',
+        seq,
+        time: Date.now() - 40000,
+        data: { content: [{ type: 'text', text: ANCHOR_TEXT }], source: { kind: 'user' } }
+      }
+    }
   },
   async readSurface(id) {
     return {
@@ -102,13 +115,65 @@ const ctx = {
 
 apply(ctx, {})
 assert.ok(handler !== null, 'webServer 路由没注册')
-assert.equal(tools.length, 1)
+assert.equal(tools.length, 2)
 assert.equal(tools[0].name, 'memory_search')
+assert.equal(tools[1].name, 'self_note_write')
 assert.equal(typeof tools[0].output.render, 'function')
 assert.ok(handlers.has('agent/pre-step'), 'pre-step 钩子没注册')
 assert.ok(promptContexts.some((spec) => spec.name === 'memory-vector:bridge'), '桥接上下文没注册')
+assert.ok(promptContexts.some((spec) => spec.name === 'memory-vector:self-note'), '自述上下文没注册')
 assert.ok(handlers.has('session/event'), '采集钩子没注册')
 console.log('ok · 插件装载（工具 + API 路由 + pre-step 钩子）')
+
+/* ---------- P4：L4 自我叙述（闸门 + 注入 + 待审） ---------- */
+
+const noteTool = tools.find((tool) => tool.name === 'self_note_write')
+assert.ok(noteTool !== undefined, 'self_note_write 没注册')
+
+const noteFile = join(HOME, 'memory', 'self-note.md')
+
+const offResult = await noteTool.execute({ kind: '教训', claim: ANCHOR_TEXT, anchors: ['prev-0001#2'] })
+assert.match(offResult, /未开启/, offResult)
+assert.equal(existsSync(noteFile), false, '关闭时不该创建文件')
+console.log('ok · 自述默认关闭且不落盘')
+
+await call('POST', '/settings', {
+  settings: { ...(await call('GET', '/state')).body.settings, selfNoteEnabled: true }
+})
+
+const rejected = await noteTool.execute({ kind: '教训', claim: '我感到很开心，索引改成分片了。', anchors: ['prev-0001#2'] })
+assert.match(rejected, /被拒/)
+assert.match(rejected, /禁语/)
+
+const badAnchor = await noteTool.execute({ kind: '教训', claim: '索引改成分片，每片 3000 字。', anchors: ['prev-0001#99'] })
+assert.match(badAnchor, /被拒/, badAnchor)
+
+const accepted = await noteTool.execute({ kind: '教训', claim: '索引改成分片，每片 3000 字。', anchors: ['prev-0001#2'] })
+assert.match(accepted, /已写入/, accepted)
+assert.ok(existsSync(noteFile), '应写出自述文件')
+const noteMd = readFileSync(noteFile, 'utf8')
+assert.ok(noteMd.includes('<!-- managed:self-note start -->'))
+assert.ok(noteMd.includes('索引改成分片'))
+
+const noteSpec = promptContexts.find((spec) => spec.name === 'memory-vector:self-note')
+const injected = noteSpec.text()
+assert.ok(injected.startsWith('【我记下的关于自己的事实】'), injected)
+assert.ok(injected.includes('prev-0001#2'), '注入必须带出处')
+console.log('ok · 自述写入（禁语 / 锚点拦截 + 受管块 + 带出处注入）')
+
+await call('POST', '/settings', {
+  settings: { ...(await call('GET', '/state')).body.settings, requireApproval: true }
+})
+const queued = await noteTool.execute({ kind: '偏好', claim: '检索先查 FTS 再算余弦。', anchors: ['prev-0001#2'] })
+assert.match(queued, /待审/, queued)
+
+const queueState = await call('GET', '/selfnote')
+assert.equal(queueState.body.pending.length, 1)
+const pendingId = queueState.body.pending[0].id
+const approved = await call('POST', '/selfnote', { action: 'approve', id: pendingId })
+assert.equal(approved.body.pending.length, 0)
+assert.equal(approved.body.entries.length, 2)
+console.log(`ok · 待审队列（${pendingId} 采纳后生效）`)
 
 /** 构造假 req/res，直接打 handler。 */
 async function call(method, route, body) {

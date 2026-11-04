@@ -18,6 +18,15 @@ import {
   MANAGED_START,
   MANAGED_END
 } from '../lib/weights.js'
+import {
+  discardExpired,
+  emptyState,
+  nextId,
+  renderNotes,
+  resolvePending,
+  trimEntries,
+  validateDraft
+} from '../lib/selfnote.js'
 
 /* ---------- 事件抽取 ---------- */
 
@@ -297,5 +306,98 @@ console.log('ok · 刷新节奏（按天 / 按轮 / 手动）')
 assert.ok(resolveTarget('C:\\h', 'AGENT.md').endsWith('AGENT.md'))
 assert.ok(resolveTarget('C:\\h', 'notes/mem.md').endsWith('mem.md'))
 console.log('ok · 快照目标路径')
+
+/* ---------- L4 自我叙述：六道闸门 ---------- */
+
+const anchorTexts = ['我把索引改成了分片，每片 3000 字，检索时先查 FTS 再算余弦。']
+
+const good = validateDraft(
+  { kind: '教训', claim: '索引需要分片，每片 3000 字，检索先查 FTS 再算余弦。', anchors: ['session-abc#42'] },
+  { anchorSources: anchorTexts, entries: [], now: clock, mode: 'auto' }
+)
+assert.equal(good.ok, true, JSON.stringify(good.errors))
+assert.equal(good.entry.status, 'active')
+
+const invented = validateDraft(
+  { kind: '教训', claim: '我意识到简洁的代码更容易维护，这是我今年的最大收获。', anchors: ['session-abc#42'] },
+  { anchorSources: anchorTexts, entries: [], now: clock, mode: 'auto' }
+)
+assert.equal(invented.ok, false)
+assert.ok(invented.errors.some((line) => line.includes('重叠')), JSON.stringify(invented.errors))
+
+for (const claim of ['我感到很开心。', '我最擅长写检索。', '我会永远记住这条。', '我是人类。', '最近我发现分片很重要。']) {
+  const result = validateDraft({ kind: '教训', claim, anchors: ['session-abc#42'] }, { anchorSources: anchorTexts, entries: [], now: clock })
+  assert.equal(result.ok, false, `应当拒收：${claim}`)
+  assert.ok(result.errors.some((line) => line.includes('禁语')), `${claim} → ${JSON.stringify(result.errors)}`)
+}
+
+assert.equal(validateDraft({ kind: '随便', claim: '索引分片', anchors: ['session-abc#42'] }, { anchorSources: anchorTexts, entries: [], now: clock }).ok, false)
+assert.equal(validateDraft({ kind: '教训', claim: '索引分片', anchors: [] }, { anchorSources: anchorTexts, entries: [], now: clock }).ok, false)
+
+const withReason = validateDraft(
+  { kind: '未完成', claim: '权重历史回填还没做完，因为要扫全部日志太慢。', anchors: ['session-abc#42'] },
+  { anchorSources: anchorTexts, entries: [], now: clock }
+)
+assert.equal(withReason.ok, false)
+assert.ok(withReason.errors.some((line) => line.includes('不许写原因')), JSON.stringify(withReason.errors))
+
+const tooLong = validateDraft({ kind: '教训', claim: '分'.repeat(240), anchors: ['session-abc#42'] }, { anchorSources: [], entries: [], now: clock })
+assert.equal(tooLong.ok, false)
+console.log('ok · 闸门（禁语 / 重叠 / 未完成不写原因 / 长度）')
+
+const existing = [{ id: 'L4-20261101-01', kind: '教训', claim: '索引需要分片，每片 3000 字。', anchors: ['session-x#1'], status: 'active' }]
+const quietEdit = validateDraft(
+  { kind: '教训', claim: '索引需要分片，每片 3000 字，检索先查 FTS 再算余弦。', anchors: ['session-abc#42'] },
+  { anchorSources: anchorTexts, entries: existing, now: clock }
+)
+assert.equal(quietEdit.ok, false, '高度重合的改写必须带 supersedes')
+assert.ok(quietEdit.errors.some((line) => line.includes('supersedes')))
+
+const explicit = validateDraft(
+  { kind: '教训', claim: '索引需要分片，每片 3000 字，检索先查 FTS 再算余弦。', anchors: ['session-abc#42'], supersedes: 'L4-20261101-01' },
+  { anchorSources: anchorTexts, entries: existing, now: clock }
+)
+assert.equal(explicit.ok, true, JSON.stringify(explicit.errors))
+console.log('ok · 冲突必须显式取代（supersedes）')
+
+assert.equal(nextId([], clock), 'L4-20261104-01')
+assert.equal(nextId([{ id: 'L4-20261104-01' }, { id: 'L4-20261104-02' }], clock), 'L4-20261104-03')
+
+const notesText = renderNotes(
+  [{ id: 'L4-1', kind: '能力边界', claim: '我不能直接读剪贴板。', anchors: ['session-abc#42'], status: 'active' }],
+  { budget: 1200 }
+)
+assert.ok(notesText.startsWith('【我记下的关于自己的事实】'), '措辞必须是"记下的"而不是"我是"')
+assert.ok(notesText.includes('以当前事实为准'), '必须给模型自我否决权')
+assert.ok(notesText.includes('session-abc#42'))
+assert.equal(renderNotes([{ id: 'L4-2', kind: '教训', claim: '这句不该出现', anchors: [], status: 'stale' }], {}), '', 'stale 不注入')
+
+const capped = emptyState()
+capped.entries = Array.from({ length: 5 }, (_item, index) => ({
+  id: `L4-20261101-0${index + 1}`,
+  at: clock,
+  kind: '教训',
+  claim: `第 ${index + 1} 条`,
+  anchors: [],
+  status: 'active'
+}))
+trimEntries(capped, 3)
+assert.equal(capped.entries.length, 3, '超出上限要归档')
+assert.equal(capped.archive.length, 2, '归档不是删除')
+
+const pendingState = emptyState()
+pendingState.pending = [{ id: 'L4-9', claim: 'x', createdAt: clock - 80 * 3600000 }]
+assert.equal(discardExpired(pendingState, 72, clock), 1)
+assert.equal(pendingState.pending.length, 0)
+
+const queueState = emptyState()
+queueState.pending = [{ id: 'L4-9', kind: '教训', claim: '索引分片', anchors: ['a#1'], status: 'pending', createdAt: clock }]
+assert.equal(resolvePending(queueState, 'L4-9', 'discard').ok, true)
+assert.equal(queueState.entries.length, 0)
+queueState.pending = [{ id: 'L4-9', kind: '教训', claim: '索引分片', anchors: ['a#1'], status: 'pending', createdAt: clock }]
+assert.equal(resolvePending(queueState, 'L4-9', 'approve').ok, true)
+assert.equal(queueState.entries.length, 1)
+assert.equal(queueState.entries[0].status, 'active')
+console.log('ok · 编号 / 注入措辞 / 上限归档 / 过期丢弃 / 采纳丢弃')
 
 console.log('\n全部单测通过')
