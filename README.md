@@ -3,7 +3,7 @@
 给 DeepSeek Harness 补上**五层记忆链的向量层**：对话原文落盘、切块向量化、关键词与向量混合召回。
 接的是火山方舟 Agent Plan 的 `doubao-embedding-vision`（`/api/plan/v3/embeddings`）。
 
-> 当前版本 **0.4.0**：L0 原文库 + 混合检索 + 每轮自动回想（P1）+ **L1 跨会话桥接（P2）** + 设置页 + 多套向量化模型可切换。L2 权重链 / L4 自述的参数已进设置页，行为待接入。
+> 当前版本 **0.5.0**：L0 原文库 + 混合检索 + 每轮自动回想（P1）+ L1 跨会话桥接（P2）+ **L2 长期权重（P3）** + 设置页 + 多套向量化模型可切换。L4 自述的参数已进设置页，行为待接入。
 
 ## 它做什么
 
@@ -24,6 +24,12 @@ systemPrompt.context('memory-vector:bridge') ◄── sessionQuery.readSurface(
 - **跨会话桥接（P2）**：新会话开场时，把上一场对话的尾巴挂进系统提示的固定位置，
   走 `systemPrompt.context` 而不是塞进消息列表——位置固定、内容恒等，前缀缓存不会被打断。
   内容只来自本机会话日志（`sessionQuery`），不外发；压缩摘要、插件注入、子智能体会话都会被剔除。
+- **长期权重（P3）**：每次检索命中的块会记一次「被用到」（`hits` + `last_hit_at`）。权重 =
+  `(1 + ln(1+hits)) × 0.5^(天数 / 半衰期)`——用得多的记得牢，久不用的自然淡出。
+  权重只影响排序，不进提示词；定期把最强的一批写成快照，落进 AGENT.md 里
+  `<!-- managed:memory-weights start -->` 与 `end` 之间的受管章节，**之外的内容一个字都不动**。
+  刷新节奏可选 `daily`（默认，按小时）/ `turns`（按轮）/ `manual`（只手动），
+  内容没变就不写盘。
 - **存储**：`<DSH_HOME>/storages/memory-vector/index.sqlite`，正文和向量同一行，检索路径永远对得上。
 - **中文检索**：FTS5 的 `unicode61` 会把整句中文当一个 token，所以额外存一列 CJK 重叠二元组，
   `记忆检索` → `记忆 忆检 检索`，否则中文关键词等于搜不到。
@@ -101,11 +107,15 @@ plugin_manager  action: install_bundle  target: <本目录绝对路径>
 | 检索 | `topK` / `minScore` / `maxHitsPerSession` / `contextChars` / `hybrid` / `injectEnabled` / `injectChars` | 召回条数、预算、自动回想开关 |
 | 向量模型 | `embeddingProviders[]` / `embeddingActive` | 多套并存，逐套 `model` / `dimensions` / `baseUrl` / `apiKeyRef` / `timeoutMs` / `batchSize` |
 | L1 桥接 | `bridgeEnabled` / `bridgeScope` / `bridgeDays` / `bridgeMessages` / `bridgeChars` | 同工作区最近一场（或 N 天内最多三场）的尾巴 |
-| L2 权重 | `weightsEnabled` / `halfLifeDays` / `maxEntries` / `refreshTurns` | 待接入（P3） |
+| L2 权重 | `weightsEnabled` / `halfLifeDays` / `maxEntries` / `weightsRefreshMode` / `weightsRefreshHours` / `refreshTurns` / `weightsTarget` | 艾宾浩斯权重 + 快照节奏 |
 | L4 自述 | `selfNoteEnabled` / `maxNoteEntries` / `budgetChars` | 待接入（P4） |
 
 `bridgeScope` 支持 `workspace-latest`（同工作区最近一场）与 `recent-days`（同工作区最近 N 天内最多三场，N 可配）。
 桥接正文进系统提示，**每次请求都要付这份 token**，所以另有 `bridgeChars` 预算（默认 1200）。
+
+`weightsRefreshMode` 三选一：`daily`（按 `weightsRefreshHours`，默认 24 小时＝一天一次）、
+`turns`（按 `refreshTurns`）、`manual`（只在设置页点「立即刷新」）。权重是慢变量，一天一次足够；
+`weightsTarget` 默认 `AGENT.md`，也可以指向别的文件。
 
 ## 自检
 

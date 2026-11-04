@@ -4,7 +4,7 @@
  *   $env:ARK_CODE_LATEST_API_KEY='...'; node tests/host-smoke.mjs
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -327,6 +327,45 @@ assert.ok(bridgeHealth.bridgeChars > 0)
 assert.deepEqual(bridgeHealth.bridgeSessions, ['prev-0001'])
 assert.equal(bridgeHealth.bridgeFrozen, 1)
 console.log(`ok · health 记录桥接（${bridgeHealth.bridgeChars} 字 / 冻结 ${bridgeHealth.bridgeFrozen} 场）`)
+
+/* ---------- P3：L2 权重快照（需要真实命中记录） ---------- */
+
+if (hasKey) {
+  const AGENT_MD = join(HOME, 'AGENT.md')
+  writeFileSync(AGENT_MD, '# 你是谁\n\n我是子非鱼。\n\n# 边界\n\n不编造。\n', 'utf8')
+
+  const weightsOn = await call('POST', '/settings', {
+    settings: { ...(await call('GET', '/state')).body.settings, weightsEnabled: true }
+  })
+  assert.equal(weightsOn.body.settings.weightsEnabled, true)
+  assert.equal(weightsOn.body.settings.weightsRefreshMode, 'daily', '默认节奏应是一天一次')
+  assert.equal(weightsOn.body.settings.weightsRefreshHours, 24)
+
+  const refreshed = await call('POST', '/weights', {})
+  assert.equal(refreshed.body.result.ok, true, JSON.stringify(refreshed.body.result))
+  assert.ok(refreshed.body.result.entries >= 1, '至少要写进一条被命中过的记忆')
+
+  const after = readFileSync(AGENT_MD, 'utf8')
+  assert.ok(after.startsWith('# 你是谁'), '手写内容必须在最前，且不被改动')
+  assert.ok(after.includes('我是子非鱼。'))
+  assert.ok(after.includes('不编造。'))
+  assert.ok(after.includes('<!-- managed:memory-weights start -->'))
+  assert.ok(after.includes('session-old#7'), '快照条目要带 sessionId#seq 锚点')
+  console.log(`ok · 权重快照写入 AGENT.md（${refreshed.body.result.entries} 条，手写内容零改动）`)
+
+  const again = await call('POST', '/weights', {})
+  assert.equal(again.body.result.changed, false, '同内容重写应幂等')
+  assert.equal(readFileSync(AGENT_MD, 'utf8'), after)
+  console.log('ok · 重复刷新不重写文件')
+
+  const weightsState = (await call('GET', '/state')).body.weights
+  assert.equal(weightsState.enabled, true)
+  assert.ok(weightsState.lastAt > 0)
+  assert.match(weightsState.preview, /managed:memory-weights/)
+  console.log(`ok · /state 暴露权重状态（${weightsState.entries} 条）`)
+} else {
+  console.log('skip · 没有 ARK_CODE_LATEST_API_KEY，跳过权重快照')
+}
 
 if (hasKey) {
   const offline = await call('POST', '/probe', {

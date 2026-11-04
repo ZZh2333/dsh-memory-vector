@@ -8,6 +8,16 @@ import { eventText, splitChunk } from '../lib/index.js'
 import { ftsQuery, ftsText } from '../lib/store.js'
 import { normalize, normalizeProviders, activeProvider, DEFAULTS, DEFAULT_PROVIDER } from '../lib/settings.js'
 import { messageOf, tailOf, renderBridge, collectBridge } from '../lib/bridge.js'
+import {
+  applyManagedBlock,
+  decayWeight,
+  isDue,
+  rankWeights,
+  renderManagedBlock,
+  resolveTarget,
+  MANAGED_START,
+  MANAGED_END
+} from '../lib/weights.js'
 
 /* ---------- 事件抽取 ---------- */
 
@@ -215,5 +225,77 @@ assert.ok(!recent.sessions.includes('other-1'), 'recent-days 也只取同工作�
 const noService = await collectBridge({ sessionQuery: undefined, cwd: 'D:\\w', currentSessionId: '', scope: 'workspace-latest', days: 7, maxMessages: 12, budget: 1200 })
 assert.deepEqual(noService, { text: '', sessions: [] })
 console.log('ok · 桥接采集（排除自己 / 过滤子会话 / 无服务时静默）')
+
+/* ---------- L2 长期权重 ---------- */
+
+const DAY = 86400000
+const clock = Date.UTC(2026, 10, 4)
+
+// 半衰期：命中 0 次、恰好过了 21 天 → 权重 0.5
+const halved = decayWeight({ hits: 0, lastHitAt: clock - 21 * DAY, createdAt: clock - 100 * DAY, now: clock, halfLifeDays: 21 })
+assert.ok(Math.abs(halved - 0.5) < 1e-9, `半衰期应为 0.5，实际 ${halved}`)
+
+const oneHit = decayWeight({ hits: 1, lastHitAt: clock, createdAt: clock, now: clock, halfLifeDays: 21 })
+const tenHits = decayWeight({ hits: 10, lastHitAt: clock, createdAt: clock, now: clock, halfLifeDays: 21 })
+assert.ok(tenHits > oneHit, '命中越多权重越高')
+
+const justUsed = decayWeight({ hits: 3, lastHitAt: clock, createdAt: clock, now: clock, halfLifeDays: 21 })
+const longUnused = decayWeight({ hits: 3, lastHitAt: clock - 60 * DAY, createdAt: clock, now: clock, halfLifeDays: 21 })
+assert.ok(justUsed > longUnused, '越久没用权重越低')
+// 从没被用过 → 用创建时间做衰减锚点
+assert.ok(decayWeight({ hits: 0, lastHitAt: 0, createdAt: clock - 21 * DAY, now: clock, halfLifeDays: 21 }) < 0.6)
+console.log('ok · 艾宾浩斯权重（半衰期 / 次数强化 / 时间衰减）')
+
+const ranked = rankWeights(
+  [
+    { sessionId: 'a', seq: 1, text: '旧的热门', hits: 5, lastHitAt: clock - 30 * DAY, createdAt: clock - 40 * DAY },
+    { sessionId: 'b', seq: 2, text: '新的冷门', hits: 1, lastHitAt: clock, createdAt: clock - 2 * DAY },
+    { sessionId: 'c', seq: 3, text: '从没用过', hits: 0, lastHitAt: 0, createdAt: clock - 1 * DAY }
+  ],
+  { now: clock, halfLifeDays: 21, limit: 2 }
+)
+assert.equal(ranked.length, 2)
+assert.ok(ranked[0].weight >= ranked[1].weight)
+console.log('ok · 权重排序与截断')
+
+const block = renderManagedBlock(
+  [{ sessionId: 'sess-1', seq: 42, text: '索引改成分片了', hits: 3, lastHitAt: clock - 2 * DAY, weight: 1.8 }],
+  { now: clock, halfLifeDays: 21, zh: true }
+)
+assert.ok(block.startsWith(MANAGED_START))
+assert.ok(block.trimEnd().endsWith(MANAGED_END))
+assert.match(block, /sess-1#42/, '每条都要带锚点')
+assert.match(block, /半衰期 21 天/)
+console.log('ok · 快照渲染（标记 + 锚点）')
+
+const appended = applyManagedBlock('', block)
+assert.ok(appended.startsWith(MANAGED_START))
+
+const withPersona = applyManagedBlock('# 你是谁\n\n我是子非鱼。\n', block)
+assert.ok(withPersona.startsWith('# 你是谁'))
+assert.ok(withPersona.includes('我是子非鱼。'))
+assert.ok(withPersona.includes(MANAGED_START))
+
+const grown = withPersona.replace('我是子非鱼。', '我是子非鱼，来自夜之城。')
+const edited = block.replace('索引改成分片了', '索引改成两片')
+const replaced = applyManagedBlock(grown, edited)
+assert.ok(replaced.includes('我是子非鱼，来自夜之城。'), '受管块之外的内容不能被改')
+assert.equal(replaced.match(/managed:memory-weights start/g).length, 1, '不能出现两个受管块')
+assert.ok(replaced.includes('索引改成两片'))
+assert.equal(replaced, applyManagedBlock(replaced, edited), '同内容重写应幂等')
+console.log('ok · 受管块就地替换（之外内容零改动 + 幂等）')
+
+assert.equal(isDue({ mode: 'daily', hours: 24, lastAt: 0, lastTurn: null, turn: 1, now: clock }), true)
+assert.equal(isDue({ mode: 'daily', hours: 24, lastAt: clock - 23 * 3600000, lastTurn: null, turn: 5, now: clock }), false)
+assert.equal(isDue({ mode: 'daily', hours: 24, lastAt: clock - 25 * 3600000, lastTurn: null, turn: 5, now: clock }), true)
+assert.equal(isDue({ mode: 'daily', hours: 12, lastAt: clock - 13 * 3600000, lastTurn: null, turn: 5, now: clock }), true)
+assert.equal(isDue({ mode: 'turns', hours: 24, turns: 20, lastAt: clock, lastTurn: 5, turn: 24, now: clock }), false)
+assert.equal(isDue({ mode: 'turns', hours: 24, turns: 20, lastAt: clock, lastTurn: 5, turn: 25, now: clock }), true)
+assert.equal(isDue({ mode: 'manual', hours: 24, turns: 20, lastAt: 0, lastTurn: null, turn: 99, now: clock }), false)
+console.log('ok · 刷新节奏（按天 / 按轮 / 手动）')
+
+assert.ok(resolveTarget('C:\\h', 'AGENT.md').endsWith('AGENT.md'))
+assert.ok(resolveTarget('C:\\h', 'notes/mem.md').endsWith('mem.md'))
+console.log('ok · 快照目标路径')
 
 console.log('\n全部单测通过')
