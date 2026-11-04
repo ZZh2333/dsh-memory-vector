@@ -357,6 +357,14 @@ if (hasKey) {
   seedStore.close()
   console.log('ok · 种下一条历史记忆（向量与查询相同 → 余弦 1.0）')
 
+  const awayStrict = await call('POST', '/search', { query: QUERY, cwd: 'D:\\projects\\other', scope: 'workspace' })
+  assert.equal(awayStrict.body.hits.length, 0, 'workspace 模式下不该召回别的工作区')
+  const homeStrict = await call('POST', '/search', { query: QUERY, cwd: 'D:\\projects\\old', scope: 'workspace' })
+  assert.equal(homeStrict.body.hits.length, 1, 'workspace 模式下应召回本工作区')
+  const awayDefault = await call('POST', '/search', { query: QUERY, cwd: 'D:\\projects\\other' })
+  assert.equal(awayDefault.body.hits.length, 1, '默认 workspace-first 仍允许召回外区')
+  console.log('ok · 检索工作区范围（workspace 严格 / workspace-first 放行）')
+
   const turnInput = {
     agent: { session: { id: 'session-live' } },
     messages: [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: QUERY }] }],

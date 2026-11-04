@@ -3,7 +3,7 @@
 给 DeepSeek Harness 补上**五层记忆链的向量层**：对话原文落盘、切块向量化、关键词与向量混合召回。
 接的是火山方舟 Agent Plan 的 `doubao-embedding-vision`（`/api/plan/v3/embeddings`）。
 
-> 当前版本 **0.8.0**：L0 原文库 + 混合检索 + 每轮自动回想（P1）+ L1 跨会话桥接（P2）+ L2 长期权重（P3）+ L4 自我叙述（P4）+ L3 交付物索引（P5）+ **历史回填** + 设置页 + 多套向量化模型可切换。
+> 当前版本 **0.9.0**：L0 原文库 + 混合检索 + 每轮自动回想（P1）+ L1 跨会话桥接（P2）+ L2 长期权重（P3）+ L4 自我叙述（P4）+ L3 交付物索引（P5）+ 历史回填 + **跨工作区范围** + 设置页 + 多套向量化模型可切换。
 
 ## 它做什么
 
@@ -46,6 +46,9 @@ systemPrompt.context('memory-vector:bridge') ◄── sessionQuery.readSurface(
 - **中文检索**：FTS5 的 `unicode61` 会把整句中文当一个 token，所以额外存一列 CJK 重叠二元组，
   `记忆检索` → `记忆 忆检 检索`，否则中文关键词等于搜不到。
 - **检索**：`memory_search` 工具，返回带 `sessionId#seq` 的块，可用 `session_event_read` 回溯原文。
+- **跨工作区**：`retrievalScope` 三档——`workspace-first`（默认，本工作区整体提前，外区仍可召回）、
+  `workspace`（只认本工作区）、`global`（不分工作区）。桥接、交付物、回填另有一层工作区隔离，
+  与检索范围互不影响。
 
 ## 多套向量化模型
 
@@ -117,7 +120,7 @@ plugin_manager  action: install_bundle  target: <本目录绝对路径>
 |---|---|---|
 | L0 采集 | `ingestEnabled` / `minTurnChars` / `maxChunkChars` / `excludeWorkspaces` | 采集开关与切块粒度 |
 | 历史回填 | `backfillMaxSessions` / `backfillMaxChunks` / `backfillOnlyWorkspace` | 一次补多少、补哪些 |
-| 检索 | `topK` / `minScore` / `maxHitsPerSession` / `contextChars` / `hybrid` / `injectEnabled` / `injectChars` | 召回条数、预算、自动回想开关 |
+| 检索 | `topK` / `minScore` / `maxHitsPerSession` / `contextChars` / `hybrid` / `retrievalScope` / `injectEnabled` / `injectChars` | 召回条数、预算、跨工作区范围、自动回想开关 |
 | 向量模型 | `embeddingProviders[]` / `embeddingActive` | 多套并存，逐套 `model` / `dimensions` / `baseUrl` / `apiKeyRef` / `timeoutMs` / `batchSize` |
 | L1 桥接 | `bridgeEnabled` / `bridgeScope` / `bridgeDays` / `bridgeMessages` / `bridgeChars` | 同工作区最近一场（或 N 天内最多三场）的尾巴 |
 | L3 交付物 | `deliverablesEnabled` / `deliverableTools` / `deliverableScope` / `maxDeliverables` / `deliverablesOwnerOnly` | 文件路径 + 出处，不含内容 |

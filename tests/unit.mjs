@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 
 import { eventText, splitChunk } from '../lib/index.js'
 import { ftsQuery, ftsText } from '../lib/store.js'
+import { selectHits } from '../lib/retrieval.js'
 import { normalize, normalizeProviders, activeProvider, DEFAULTS, DEFAULT_PROVIDER } from '../lib/settings.js'
 import { messageOf, tailOf, renderBridge, collectBridge } from '../lib/bridge.js'
 import {
@@ -475,5 +476,39 @@ assert.deepEqual(pickable.map((session) => session.id), ['s-new', 's-old'])
 assert.equal(pickSessions(pickable, { cwd: 'D:\\w', onlyWorkspace: true, limit: 0 }).length, 0)
 assert.equal(estimateTokens([{ text: 'a'.repeat(160) }]), 100)
 console.log('ok · 回填选场（跳过已处理 / 子会话 / 别的工作区 / 新的优先）')
+
+/* ---------- 检索的工作区范围 ---------- */
+
+const scopedRows = [
+  { rowid: 1, sessionId: 's-home', cwd: 'D:\\home', seq: 1, turn: 1, text: '本工作区的部署脚本', createdAt: clock },
+  { rowid: 2, sessionId: 's-away', cwd: 'D:\\away', seq: 2, turn: 1, text: '别的项目也在说部署脚本', createdAt: clock },
+  { rowid: 3, sessionId: 's-home2', cwd: 'D:\\home', seq: 3, turn: 2, text: '本工作区的第二条', createdAt: clock }
+]
+const scopedStore = { rowsByIds: (ids) => scopedRows.filter((row) => ids.includes(row.rowid)) }
+const scopedOrder = [
+  { rowid: 2, score: 0.9, similarity: 0.9, ftsRank: null, vecRank: 1 },
+  { rowid: 1, score: 0.8, similarity: 0.8, ftsRank: null, vecRank: 2 },
+  { rowid: 3, score: 0.7, similarity: 0.7, ftsRank: null, vecRank: 3 }
+]
+const baseSelect = {
+  store: scopedStore,
+  ordered: scopedOrder,
+  topK: 3,
+  minScore: 0,
+  maxHitsPerSession: 5,
+  contextChars: 4000,
+  cwd: 'D:\\home'
+}
+
+const globalHits = selectHits({ ...baseSelect, scope: 'global' })
+assert.deepEqual(globalHits.map((hit) => hit.rowid), [2, 1, 3], 'global 完全按相关度')
+
+const localOnly = selectHits({ ...baseSelect, scope: 'workspace' })
+assert.deepEqual(localOnly.map((hit) => hit.rowid), [1, 3], 'workspace 不许别的项目进来')
+
+const localFirst = selectHits({ ...baseSelect, scope: 'workspace-first' })
+assert.deepEqual(localFirst.map((hit) => hit.rowid), [1, 3, 2], 'workspace-first 本工作区整体提前')
+assert.equal(selectHits({ ...baseSelect, scope: 'workspace', cwd: '' }).length, 3, '没有 cwd 时不瞎过滤')
+console.log('ok · 检索范围（global / workspace / workspace-first）')
 
 console.log('\n全部单测通过')
