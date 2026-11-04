@@ -61,7 +61,9 @@ const sessionQuery = {
 const ctx = {
   logger: { warn() {}, info() {}, error() {} },
   on(event, fn) {
-    handlers.set(event, fn)
+    const list = handlers.get(event) ?? []
+    list.push(fn)
+    handlers.set(event, list)
     return () => {}
   },
   effect(fn) {
@@ -115,9 +117,10 @@ const ctx = {
 
 apply(ctx, {})
 assert.ok(handler !== null, 'webServer 路由没注册')
-assert.equal(tools.length, 2)
+assert.equal(tools.length, 3)
 assert.equal(tools[0].name, 'memory_search')
 assert.equal(tools[1].name, 'self_note_write')
+assert.equal(tools[2].name, 'deliverable_search')
 assert.equal(typeof tools[0].output.render, 'function')
 assert.ok(handlers.has('agent/pre-step'), 'pre-step 钩子没注册')
 assert.ok(promptContexts.some((spec) => spec.name === 'memory-vector:bridge'), '桥接上下文没注册')
@@ -174,6 +177,76 @@ const approved = await call('POST', '/selfnote', { action: 'approve', id: pendin
 assert.equal(approved.body.pending.length, 0)
 assert.equal(approved.body.entries.length, 2)
 console.log(`ok · 待审队列（${pendingId} 采纳后生效）`)
+
+/* ---------- P5：L3 交付物索引（采集 + root-only） ---------- */
+
+function emitSession(event, session, payload) {
+  for (const listener of handlers.get(event) ?? []) listener(session, payload)
+}
+
+const liveSession = { header: { id: 'session-live', cwd: 'D:\\projects\\demo' } }
+emitSession('session/event', liveSession, {
+  type: 'tool/call',
+  time: Date.now(),
+  data: { name: 'write', callId: 'c1', turn: 4, arguments: JSON.stringify({ file_path: 'D:\\projects\\demo\\report.md' }) }
+})
+emitSession('session/event', liveSession, {
+  type: 'tool/call',
+  time: Date.now(),
+  data: {
+    name: 'present',
+    callId: 'c2',
+    turn: 4,
+    arguments: JSON.stringify({ files: [{ path: 'D:\\projects\\demo\\out.xlsx', description: '报表' }] })
+  }
+})
+// 不在名单里的工具、半截 JSON：都不该记
+emitSession('session/event', liveSession, {
+  type: 'tool/call',
+  time: Date.now(),
+  data: { name: 'pwsh', callId: 'c3', turn: 4, arguments: JSON.stringify({ command: 'echo hi' }) }
+})
+emitSession('session/event', liveSession, {
+  type: 'tool/call',
+  time: Date.now(),
+  data: { name: 'write', callId: 'c4', turn: 5, arguments: '{"file_path":"D:\\projects\\demo\\half' }
+})
+
+await new Promise((resolve) => setTimeout(resolve, 120))
+
+const listed = await call('GET', '/deliverables')
+assert.equal(listed.body.rows.length, 2, JSON.stringify(listed.body.rows))
+assert.ok(listed.body.rows.some((row) => row.path.endsWith('report.md')))
+assert.ok(listed.body.rows.some((row) => row.path.endsWith('out.xlsx') && row.kind === 'delivered'))
+console.log('ok · 交付物采集（tool/call → 索引；非名单工具与半截 JSON 被忽略）')
+
+const deliverableTool = tools.find((tool) => tool.name === 'deliverable_search')
+const ownerView = await deliverableTool.execute(
+  { query: 'report' },
+  { agent: { session: { header: { id: 'session-live', cwd: 'D:\\projects\\demo' } } } }
+)
+assert.match(ownerView, /report\.md/, ownerView)
+assert.match(ownerView, /session-live#4/)
+
+const subagentView = await deliverableTool.execute(
+  { query: 'report' },
+  { agent: { session: { header: { id: 'sub-1', cwd: 'D:\\projects\\demo', origin: 'subagent', delegationDepth: 1 } } } }
+)
+assert.match(subagentView, /被拒/, subagentView)
+assert.ok(!subagentView.includes('report.md'), '子会话不该看到主人的文件清单')
+console.log('ok · 交付物只对主会话开放（子智能体被拒）')
+
+const otherWorkspace = await deliverableTool.execute(
+  { query: 'report' },
+  { agent: { session: { header: { id: 'session-other', cwd: 'D:\\projects\\other' } } } }
+)
+assert.ok(!otherWorkspace.includes('report.md'), '默认工作区隔离')
+const crossWorkspace = await deliverableTool.execute(
+  { query: 'report', all: true },
+  { agent: { session: { header: { id: 'session-other', cwd: 'D:\\projects\\other' } } } }
+)
+assert.match(crossWorkspace, /report\.md/, 'all:true 才能跨工作区')
+console.log('ok · 工作区隔离（要跨区必须显式 all:true）')
 
 /** 构造假 req/res，直接打 handler。 */
 async function call(method, route, body) {
@@ -252,7 +325,7 @@ const hasKey = typeof key === 'string' && key !== ''
 
 /* ---------- P1：每轮自动回想 ---------- */
 
-const preStep = handlers.get('agent/pre-step')
+const preStep = handlers.get('agent/pre-step')[0]
 const QUERY = 'doubao-embedding-vision 默认用多少维'
 
 if (hasKey) {

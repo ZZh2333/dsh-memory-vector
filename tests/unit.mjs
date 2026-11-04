@@ -27,6 +27,7 @@ import {
   trimEntries,
   validateDraft
 } from '../lib/selfnote.js'
+import { dirOf, normalizePath, pathsFromToolCall, relativeTo, renderList } from '../lib/deliverables.js'
 
 /* ---------- 事件抽取 ---------- */
 
@@ -399,5 +400,40 @@ assert.equal(resolvePending(queueState, 'L4-9', 'approve').ok, true)
 assert.equal(queueState.entries.length, 1)
 assert.equal(queueState.entries[0].status, 'active')
 console.log('ok · 编号 / 注入措辞 / 上限归档 / 过期丢弃 / 采纳丢弃')
+
+/* ---------- L3 交付物：从工具调用里抠路径 ---------- */
+
+assert.deepEqual(pathsFromToolCall('write', '{"file_path":"D:\\\\w\\\\a.md","content":"x"}'), [
+  { path: 'D:\\w\\a.md', kind: 'created', note: '' }
+])
+assert.deepEqual(pathsFromToolCall('edit', '{"path":"/tmp/b.py"}'), [{ path: '/tmp/b.py', kind: 'modified', note: '' }])
+assert.deepEqual(pathsFromToolCall('present', '{"files":[{"path":"out/report.docx","description":"周报"}]}'), [
+  { path: 'out/report.docx', kind: 'delivered', note: '周报' }
+])
+assert.deepEqual(pathsFromToolCall('write', '{"file_path":"D:\\\\w\\\\half'), [])
+assert.deepEqual(pathsFromToolCall('pwsh', '{"file_path":"x"}'), [])
+assert.deepEqual(pathsFromToolCall('write', '{"content":"没有路径"}'), [])
+assert.deepEqual(pathsFromToolCall('my_tool', '{"file_path":"y.md"}', ['my_tool']), [{ path: 'y.md', kind: 'modified', note: '' }])
+console.log('ok · 交付物路径抽取（write / edit / present / 半截 JSON / 名单过滤）')
+
+assert.equal(normalizePath('  "D:\\\\Work\\\\a.md"  '), 'D:/Work/a.md')
+assert.equal(relativeTo('D:\\projects\\demo', 'D:\\projects\\demo\\src\\a.ts'), 'src/a.ts')
+assert.equal(relativeTo('D:\\projects\\demo', 'D:\\other\\b.ts'), 'D:/other/b.ts')
+assert.equal(dirOf('D:\\projects\\demo\\a.ts'), 'D:/projects/demo')
+console.log('ok · 路径归一 / 相对化 / 取目录')
+
+assert.match(renderList([], {}), /还没有记录/)
+const listing = renderList(
+  [
+    { path: 'D:\\projects\\demo\\report.md', kind: 'created', at: clock, sessionId: 'session-abc', turn: 4, note: '' },
+    { path: 'D:\\projects\\demo\\out.xlsx', kind: 'delivered', at: clock, sessionId: 'session-abc', turn: 5, note: '报表' }
+  ],
+  { cwd: 'D:\\projects\\demo', budget: 2000 }
+)
+assert.match(listing, /report\.md/)
+assert.match(listing, /session-abc#4/)
+assert.match(listing, /报表/)
+assert.ok(!listing.includes('D:\\projects\\demo\\report.md'), '同工作区应显示相对路径')
+console.log('ok · 交付物列表渲染（相对路径 + 出处 + 描述）')
 
 console.log('\n全部单测通过')
