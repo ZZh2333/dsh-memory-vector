@@ -19,9 +19,11 @@ assert.deepEqual(inject, ['tools', 'webServer'])
 let handler = null
 const tools = []
 const disposers = []
+const handlers = new Map()
 const ctx = {
   logger: { warn() {}, info() {}, error() {} },
-  on() {
+  on(event, fn) {
+    handlers.set(event, fn)
     return () => {}
   },
   effect(fn) {
@@ -61,7 +63,9 @@ assert.ok(handler !== null, 'webServer 路由没注册')
 assert.equal(tools.length, 1)
 assert.equal(tools[0].name, 'memory_search')
 assert.equal(typeof tools[0].output.render, 'function')
-console.log('ok · 插件装载（工具 + API 路由）')
+assert.ok(handlers.has('agent/pre-step'), 'pre-step 钩子没注册')
+assert.ok(handlers.has('session/event'), '采集钩子没注册')
+console.log('ok · 插件装载（工具 + API 路由 + pre-step 钩子）')
 
 /** 构造假 req/res，直接打 handler。 */
 async function call(method, route, body) {
@@ -136,9 +140,103 @@ assert.equal(refused.status, 400)
 console.log('ok · /clear 需要显式 confirm')
 
 const key = process.env.ARK_CODE_LATEST_API_KEY
-if (key === undefined || key === '') {
-  console.log('skip · 没有 ARK_CODE_LATEST_API_KEY，跳过探针')
+const hasKey = typeof key === 'string' && key !== ''
+
+/* ---------- P1：每轮自动回想 ---------- */
+
+const preStep = handlers.get('agent/pre-step')
+const QUERY = 'doubao-embedding-vision 默认用多少维'
+
+if (hasKey) {
+  const { MemoryStore } = await import('../lib/store.js')
+  const { embedTexts } = await import('../lib/embed.js')
+  const active = state.body.active
+  const { vectors } = await embedTexts([QUERY], {
+    baseUrl: active.baseUrl,
+    apiKey: key,
+    model: active.model,
+    dimensions: active.dimensions
+  })
+
+  const seedStore = await MemoryStore.open(join(HOME, 'storages', 'memory-vector', 'index.sqlite'), {
+    dimension: active.dimensions,
+    model: active.model
+  })
+  seedStore.addChunk({
+    id: 'seed-1',
+    sessionId: 'session-old',
+    cwd: 'D:\\projects\\old',
+    seq: 7,
+    turn: 3,
+    text: '我们定下来 doubao-embedding-vision 默认 1024 维，走方舟 Agent Plan。',
+    vector: vectors[0],
+    dim: active.dimensions,
+    model: active.model
+  })
+  seedStore.close()
+  console.log('ok · 种下一条历史记忆（向量与查询相同 → 余弦 1.0）')
+
+  const turnInput = {
+    agent: { session: { id: 'session-live' } },
+    messages: [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: QUERY }] }],
+    turn: 1,
+    step: 1,
+    signal: { aborted: false }
+  }
+  const enter = async () => ({ kind: 'enter', messages: [] })
+
+  const first = await preStep({ ...turnInput }, enter)
+  assert.equal(first.kind, 'enter')
+  assert.equal(first.messages.length, 1, '应注入一条记忆消息')
+  const injected = first.messages[0]
+  assert.equal(injected.role, 'user')
+  assert.equal(injected.source.kind, 'memory-vector')
+  assert.equal(injected.source.form, 'snapshot')
+  assert.match(injected.content[0].text, /【记忆·自动回想】/)
+  assert.match(injected.content[0].text, /session-old#7/)
+  console.log(`ok · pre-step 注入（${injected.content[0].text.length} 字，带 sessionId#seq 溯源）`)
+
+  const again = await preStep({ ...turnInput }, enter)
+  assert.equal(again.messages.length, 0, '同一轮重复调用不应重复注入')
+  console.log('ok · 同一轮去重')
+
+  const secondStep = await preStep({ ...turnInput, step: 2 }, enter)
+  assert.equal(secondStep.messages.length, 0, '非首步不注入')
+  console.log('ok · 只在每轮首步回想')
+
+  const rejected = await preStep({ ...turnInput }, async () => ({ kind: 'reject' }))
+  assert.deepEqual(rejected, { kind: 'reject' }, '被拒绝的步骤必须原样放行')
+  console.log('ok · reject 决策原样透传')
+
+  const noise = await preStep(
+    {
+      ...turnInput,
+      turn: 2,
+      messages: [{ role: 'user', source: { kind: 'runtime-context' }, content: [{ type: 'text', text: QUERY }] }]
+    },
+    enter
+  )
+  assert.equal(noise.messages.length, 0, '只有注入消息时不该回想')
+  console.log('ok · 无真实用户输入时不回想')
+
+  const off = await call('POST', '/settings', {
+    settings: { ...saved.body.settings, injectEnabled: false }
+  })
+  assert.equal(off.body.settings.injectEnabled, false)
+  const whileOff = await preStep({ ...turnInput, turn: 3 }, enter)
+  assert.equal(whileOff.messages.length, 0, '关闭开关后不注入')
+  await call('POST', '/settings', { settings: { ...off.body.settings, injectEnabled: true } })
+  console.log('ok · 开关关闭时自动回想停止')
+
+  const health = (await call('GET', '/state')).body.health
+  assert.ok(health.injected >= 1)
+  assert.equal(health.lastInjectReason, 'ok')
+  console.log(`ok · health 记录注入（${health.injected} 次）`)
 } else {
+  console.log('skip · 没有 ARK_CODE_LATEST_API_KEY，跳过自动回想与探针')
+}
+
+if (hasKey) {
   const offline = await call('POST', '/probe', {
     provider: { ...state.body.settings.embeddingProviders[0], baseUrl: 'http://127.0.0.1:9/v1', timeoutMs: 1500 }
   })

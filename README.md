@@ -3,18 +3,22 @@
 给 DeepSeek Harness 补上**五层记忆链的向量层**：对话原文落盘、切块向量化、关键词与向量混合召回。
 接的是火山方舟 Agent Plan 的 `doubao-embedding-vision`（`/api/plan/v3/embeddings`）。
 
-> 当前版本 **0.2.0**：L0 原文库 + 混合检索 + 设置页 + **多套向量化模型可切换**。L1 桥接 / L2 权重链 / L4 自述的参数已进设置页，行为待接入。
+> 当前版本 **0.3.0**：L0 原文库 + 混合检索 + **每轮自动回想（P1）** + 设置页 + 多套向量化模型可切换。L1 桥接 / L2 权重链 / L4 自述的参数已进设置页，行为待接入。
 
 ## 它做什么
 
 ```
 session/event ──► 按 turn 聚合成块 ──► Ark /embeddings ──► sqlite（正文 + FTS5 + 归一化 float32 向量）
                                                                    │
-memory_search(query) ◄── RRF 融合（bm25 名次 ⊕ 余弦名次）◄─────────┘
+agent/pre-step ──► 自动回想（每轮首步）◄── RRF 融合（bm25 名次 ⊕ 余弦名次）──► memory_search(query)
 ```
 
 - **采集**：`session/event` 的 user/assistant 文本按回合拼块，`turn/end` 时入队，异步向量化。
   运行时注入的上下文（`source.kind === 'runtime-context'`）不入库。
+- **自动回想（P1）**：每轮第一个步骤，按你这句话检索记忆，命中就作为一条 `source.kind = memory-vector`
+  的用户消息插在你后面，带 `sessionId#seq` 溯源。同一轮不重复、跨轮同内容也不重复（它已经在历史里了），
+  字符预算独立（`injectChars`，默认 1500）——注入的内容会永久留在会话里，所以比手动检索更省。
+  关掉 `injectEnabled` 就只剩工具按需检索。
 - **存储**：`<DSH_HOME>/storages/memory-vector/index.sqlite`，正文和向量同一行，检索路径永远对得上。
 - **中文检索**：FTS5 的 `unicode61` 会把整句中文当一个 token，所以额外存一列 CJK 重叠二元组，
   `记忆检索` → `记忆 忆检 检索`，否则中文关键词等于搜不到。
@@ -89,7 +93,7 @@ plugin_manager  action: install_bundle  target: <本目录绝对路径>
 | 组 | 关键参数 | 说明 |
 |---|---|---|
 | L0 采集 | `ingestEnabled` / `minTurnChars` / `maxChunkChars` / `excludeWorkspaces` | 采集开关与切块粒度 |
-| 检索 | `topK` / `minScore` / `maxHitsPerSession` / `contextChars` / `hybrid` | 召回条数与预算 |
+| 检索 | `topK` / `minScore` / `maxHitsPerSession` / `contextChars` / `hybrid` / `injectEnabled` / `injectChars` | 召回条数、预算、自动回想开关 |
 | 向量模型 | `embeddingProviders[]` / `embeddingActive` | 多套并存，逐套 `model` / `dimensions` / `baseUrl` / `apiKeyRef` / `timeoutMs` / `batchSize` |
 | L1 桥接 | `bridgeEnabled` / `bridgeScope` / `bridgeDays` / `bridgeMessages` | 待接入（P2） |
 | L2 权重 | `weightsEnabled` / `halfLifeDays` / `maxEntries` / `refreshTurns` | 待接入（P3） |
@@ -102,7 +106,7 @@ plugin_manager  action: install_bundle  target: <本目录绝对路径>
 ```powershell
 node tests/unit.mjs                                  # 离线：事件抽取 / 切块 / 设置收敛 / 多套模型 / 中文分词
 $env:ARK_CODE_LATEST_API_KEY='...'
-node tests/host-smoke.mjs                            # 假 ctx 跑 apply() 与全部同源 API（不碰真实 DSH_HOME）
+node tests/host-smoke.mjs                            # 假 ctx 跑 apply()：多套模型 / 自动回想 / 全部同源 API（不碰真实 DSH_HOME）
 node tests/e2e.mjs                                   # 真调 /embeddings：写入 → 4 个语义查询 + 1 个专有名词查询
 ```
 
