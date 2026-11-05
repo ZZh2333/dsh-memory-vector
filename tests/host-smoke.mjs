@@ -617,6 +617,31 @@ assert.equal(again.body.sessions, 0, '已回填的会话不应再出现在预览
 assert.ok(again.body.done.sessions >= 1)
 console.log('ok · 回填幂等（已处理的会话不再计入）')
 
+/* ---------- 清空索引：删之前必须先落快照 ---------- */
+
+const clearNoConfirm = await call('POST', '/clear', {})
+assert.equal(clearNoConfirm.status, 400, '没有 confirm 不该清空')
+
+const cleared = await call('POST', '/clear', { confirm: true })
+assert.equal(cleared.body.stats.chunks, 0, '清空后不该还有块')
+const backupPath = cleared.body.cleared && cleared.body.cleared.backup
+assert.ok(typeof backupPath === 'string' && backupPath !== '', '清空前必须留下快照路径')
+assert.ok(existsSync(backupPath), `快照文件应真实存在：${backupPath}`)
+// 快照是完整可用的 sqlite：块数应该等于清空前的数量
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const snapshot = new DatabaseSync(backupPath, { readOnly: true })
+  const kept = Number(snapshot.prepare('SELECT COUNT(*) n FROM chunks').get()?.n ?? 0)
+  snapshot.close()
+  assert.equal(kept, chunksAfter, `快照应保住清空前的 ${chunksAfter} 块，实际 ${kept}`)
+}
+console.log(`ok · 清空索引（先落快照，保住 ${chunksAfter} 块）`)
+
+// 空库再清一次：没有东西可备份，不该造出空快照
+const clearedEmpty = await call('POST', '/clear', { confirm: true })
+assert.equal(clearedEmpty.body.cleared.backup, null, '空库不该产生快照')
+console.log('ok · 空库重复清空不产生空快照')
+
 disposers.forEach((dispose) => dispose())
 await new Promise((resolve) => setTimeout(resolve, 100))
 rmSync(HOME, { recursive: true, force: true })
