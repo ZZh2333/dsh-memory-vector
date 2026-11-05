@@ -59,6 +59,15 @@ assert.deepEqual(
   { role: 'user', text: '看这个' },
   'system-reminder 不算主人说的话'
 )
+// 兜底：注入被宿主以 user 身份落盘时，靠正文开头认出来
+assert.equal(
+  eventText({
+    type: 'user/message',
+    data: { content: [{ type: 'text', text: '【记忆·自动回想】以下是从过去对话里检索到的相关片段……' }], source: { kind: 'user' } }
+  }),
+  null,
+  '召回注入不许进库'
+)
 assert.deepEqual(eventText({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '在' }] } } }), {
   role: 'assistant',
   text: '在'
