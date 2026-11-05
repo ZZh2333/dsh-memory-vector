@@ -3,6 +3,7 @@
  *   node tests/unit.mjs
  */
 import assert from 'node:assert/strict'
+import { existsSync, readFileSync } from 'node:fs'
 
 import { eventText, splitChunk } from '../lib/index.js'
 import { ftsQuery, ftsText } from '../lib/store.js'
@@ -33,6 +34,26 @@ import {
 import { dirOf, normalizePath, pathsFromToolCall, relativeTo, renderList } from '../lib/deliverables.js'
 import { collectTurnChunks, estimateTokens, pickSessions } from '../lib/backfill.js'
 import { attributeReply, replyOverlap, sharesVerbatim } from '../lib/attribution.js'
+
+/* ---------- 清单（这道闸是踩坑换来的） ----------
+ * package.json 里多了一个 UTF-8 BOM，DSH 的 JSON.parse 会抛，
+ * 于是整个 bundle 被静默跳过：插件不加载、设置页那一栏凭空消失，
+ * 而且没有任何报错（只在 stderr 一行 skip）。所以单测里钉死它。
+ */
+const manifestBytes = readFileSync(new URL('../package.json', import.meta.url))
+assert.ok(
+  !(manifestBytes[0] === 0xef && manifestBytes[1] === 0xbb && manifestBytes[2] === 0xbf),
+  'package.json 不能带 BOM：DSH 用 JSON.parse 读清单，带 BOM 会整包被跳过'
+)
+const manifest = JSON.parse(manifestBytes.toString('utf8'))
+assert.match(manifest.version, /^\d+\.\d+\.\d+$/)
+assert.equal(manifest.dsh.bundle.patch, './cordis.patch.yml')
+// files 里写了不存在的文件 → 发布时会缺东西，这里提前发现
+for (const entry of manifest.files) {
+  const target = new URL(`../${entry}`, import.meta.url)
+  assert.ok(existsSync(target), `package.json files 里有不存在的路径：${entry}`)
+}
+console.log(`ok · 插件清单（无 BOM / 版本 ${manifest.version} / files 都在）`)
 
 /* ---------- 事件抽取 ---------- */
 
