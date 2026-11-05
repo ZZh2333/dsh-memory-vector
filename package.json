@@ -1,6 +1,6 @@
 ﻿{
   "name": "dsh-memory-vector",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "private": true,
   "type": "module",
   "description": "浜斿眰璁板繂閾剧殑鍚戦噺灞傦細鍘熸枃搴撹惤鐩?+ BM25/鍚戦噺娣峰悎妫€绱紝鎺ユ柟鑸?doubao-embedding-vision",

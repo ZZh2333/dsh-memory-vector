@@ -23,6 +23,7 @@ import {
   discardExpired,
   emptyState,
   nextId,
+  renderNoteNudge,
   renderNotes,
   resolvePending,
   trimEntries,
@@ -539,5 +540,16 @@ const localFirst = selectHits({ ...baseSelect, scope: 'workspace-first' })
 assert.deepEqual(localFirst.map((hit) => hit.rowid), [1, 3, 2], 'workspace-first 本工作区整体提前')
 assert.equal(selectHits({ ...baseSelect, scope: 'workspace', cwd: '' }).length, 3, '没有 cwd 时不瞎过滤')
 console.log('ok · 检索范围（global / workspace / workspace-first）')
+
+/* ---------- L4 到点提醒 ---------- */
+
+assert.equal(renderNoteNudge({ turnsSince: 0 }), '', '没过期不该提醒')
+assert.equal(renderNoteNudge({ turnsSince: -3 }), '')
+assert.equal(renderNoteNudge({ turnsSince: 25, maxed: true }), '', '写满上限就不催了')
+const nudge = renderNoteNudge({ turnsSince: 25 })
+assert.match(nudge, /25 轮/)
+assert.match(nudge, /self_note_write/)
+assert.match(nudge, /没有就忽略/)
+console.log('ok · 自述提醒（到点才出现 / 写满不催）')
 
 console.log('\n全部单测通过')
