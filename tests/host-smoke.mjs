@@ -325,6 +325,15 @@ const hasKey = typeof key === 'string' && key !== ''
 
 /* ---------- P1：每轮自动回想 ---------- */
 
+const waitFor = async (check, timeoutMs = 4000) => {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    if (await check()) return true
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  return false
+}
+
 const preStep = handlers.get('agent/pre-step')[0]
 const QUERY = 'doubao-embedding-vision 默认用多少维'
 
@@ -421,6 +430,41 @@ if (hasKey) {
   assert.ok(health.injected >= 1)
   assert.equal(health.lastInjectReason, 'ok')
   console.log(`ok · health 记录注入（${health.injected} 次）`)
+
+  /* ---------- 归因：注入之后到底有没有被引用 ---------- */
+
+  const beforeAttr = (await call('GET', '/state')).body.metrics
+  assert.ok(beforeAttr.attribution.injected >= 1, '注入要被记到 injected')
+  assert.equal(beforeAttr.attribution.used, 0, '还没回复，used 必须是 0')
+  console.log(`ok · 注入只记 injected（injected=${beforeAttr.attribution.injected}, used=0）`)
+
+  // 回复里原样复述了这块记忆 → 应该被认成"用到了"
+  emitSession('session/event', liveSession, {
+    type: 'assistant/message',
+    time: Date.now(),
+    data: {
+      turn: 1,
+      message: { role: 'assistant', content: [{ type: 'text', text: '按记录：doubao-embedding-vision 默认 1024 维，走方舟 Agent Plan。' }] }
+    }
+  })
+  emitSession('session/event', liveSession, { type: 'turn/end', time: Date.now(), data: { turn: 1 } })
+
+  const attributed = await waitFor(async () => {
+    const metrics = (await call('GET', '/state')).body.metrics
+    return metrics.attribution.used >= 1
+  })
+  assert.ok(attributed, '复述了记忆却没算成引用')
+  const afterAttr = (await call('GET', '/state')).body.metrics
+  assert.ok(afterAttr.attribution.usedRatio > 0 && afterAttr.attribution.usedRatio <= 1)
+  assert.ok(afterAttr.turns.attributed >= 1)
+  console.log(`ok · 归因（used=${afterAttr.attribution.used}，注入利用率 ${afterAttr.attribution.usedRatio}）`)
+
+  // 空回复（纯工具轮 / 被中断）→ 不判定，计入 undecided
+  await preStep({ ...turnInput, turn: 4, messages: [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: QUERY }] }] }, enter)
+  emitSession('session/event', liveSession, { type: 'turn/end', time: Date.now(), data: { turn: 4 } })
+  const undecided = await waitFor(async () => (await call('GET', '/state')).body.metrics.turns.undecided >= 1)
+  assert.ok(undecided, '没有正文的轮次应计入 undecided')
+  console.log('ok · 无正文的轮次不猜（计 undecided）')
 } else {
   console.log('skip · 没有 ARK_CODE_LATEST_API_KEY，跳过自动回想与探针')
 }
@@ -432,15 +476,6 @@ const reader = { agent: { session: { id: 'reader-1', header: { cwd: 'D:\\project
 
 assert.equal(bridgeSpec.text(reader), '', '默认关闭时不注入')
 console.log('ok · 桥接默认关闭')
-
-const waitFor = async (check, timeoutMs = 4000) => {
-  const started = Date.now()
-  while (Date.now() - started < timeoutMs) {
-    if (check()) return true
-    await new Promise((resolve) => setTimeout(resolve, 50))
-  }
-  return false
-}
 
 const enabled = await call('POST', '/settings', {
   settings: { ...(await call('GET', '/state')).body.settings, bridgeEnabled: true }

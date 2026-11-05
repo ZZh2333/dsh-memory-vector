@@ -31,6 +31,7 @@ import {
 } from '../lib/selfnote.js'
 import { dirOf, normalizePath, pathsFromToolCall, relativeTo, renderList } from '../lib/deliverables.js'
 import { collectTurnChunks, estimateTokens, pickSessions } from '../lib/backfill.js'
+import { attributeReply, replyOverlap, sharesVerbatim } from '../lib/attribution.js'
 
 /* ---------- 事件抽取 ---------- */
 
@@ -274,41 +275,71 @@ const DAY = 86400000
 const clock = Date.UTC(2026, 10, 4)
 
 // 半衰期：命中 0 次、恰好过了 21 天 → 权重 0.5
-const halved = decayWeight({ hits: 0, lastHitAt: clock - 21 * DAY, createdAt: clock - 100 * DAY, now: clock, halfLifeDays: 21 })
+const halved = decayWeight({ used: 0, lastUsedAt: clock - 21 * DAY, createdAt: clock - 100 * DAY, now: clock, halfLifeDays: 21 })
 assert.ok(Math.abs(halved - 0.5) < 1e-9, `半衰期应为 0.5，实际 ${halved}`)
 
-const oneHit = decayWeight({ hits: 1, lastHitAt: clock, createdAt: clock, now: clock, halfLifeDays: 21 })
-const tenHits = decayWeight({ hits: 10, lastHitAt: clock, createdAt: clock, now: clock, halfLifeDays: 21 })
-assert.ok(tenHits > oneHit, '命中越多权重越高')
+const oneHit = decayWeight({ used: 1, lastUsedAt: clock, createdAt: clock, now: clock, halfLifeDays: 21 })
+const tenHits = decayWeight({ used: 10, lastUsedAt: clock, createdAt: clock, now: clock, halfLifeDays: 21 })
+assert.ok(tenHits > oneHit, '被引用越多权重越高')
 
-const justUsed = decayWeight({ hits: 3, lastHitAt: clock, createdAt: clock, now: clock, halfLifeDays: 21 })
-const longUnused = decayWeight({ hits: 3, lastHitAt: clock - 60 * DAY, createdAt: clock, now: clock, halfLifeDays: 21 })
+const justUsed = decayWeight({ used: 3, lastUsedAt: clock, createdAt: clock, now: clock, halfLifeDays: 21 })
+const longUnused = decayWeight({ used: 3, lastUsedAt: clock - 60 * DAY, createdAt: clock, now: clock, halfLifeDays: 21 })
 assert.ok(justUsed > longUnused, '越久没用权重越低')
 // 从没被用过 → 用创建时间做衰减锚点
-assert.ok(decayWeight({ hits: 0, lastHitAt: 0, createdAt: clock - 21 * DAY, now: clock, halfLifeDays: 21 }) < 0.6)
-console.log('ok · 艾宾浩斯权重（半衰期 / 次数强化 / 时间衰减）')
+assert.ok(decayWeight({ used: 0, lastUsedAt: 0, createdAt: clock - 21 * DAY, now: clock, halfLifeDays: 21 }) < 0.6)
+
+// 死重：灌进去很多次、一次没被引用 → 打惩罚系数
+const deadWeightValue = decayWeight({
+  used: 0,
+  injected: 5,
+  lastUsedAt: 0,
+  createdAt: clock,
+  now: clock,
+  halfLifeDays: 21,
+  deadAfterInjections: 3,
+  deadWeightPenalty: 0.6
+})
+assert.ok(Math.abs(deadWeightValue - 0.6) < 1e-9, `死重应打六折，实际 ${deadWeightValue}`)
+const almostDead = decayWeight({
+  used: 0,
+  injected: 2,
+  lastUsedAt: 0,
+  createdAt: clock,
+  now: clock,
+  halfLifeDays: 21,
+  deadAfterInjections: 3,
+  deadWeightPenalty: 0.6
+})
+assert.ok(Math.abs(almostDead - 1) < 1e-9, '没到阈值不罚')
+// 关键：被注入 50 次但从没被引用，权重不该高于被引用 1 次的
+const injectedOnly = decayWeight({ used: 0, injected: 50, createdAt: clock, now: clock, halfLifeDays: 21, deadWeightPenalty: 0.6 })
+const usedOnce = decayWeight({ used: 1, injected: 1, lastUsedAt: clock, createdAt: clock, now: clock, halfLifeDays: 21 })
+assert.ok(usedOnce >= injectedOnly, '注入次数不该抬高权重')
+console.log('ok · 艾宾浩斯权重（半衰期 / 引用强化 / 时间衰减 / 死重惩罚）')
 
 const ranked = rankWeights(
   [
-    { sessionId: 'a', seq: 1, text: '旧的热门', hits: 5, lastHitAt: clock - 30 * DAY, createdAt: clock - 40 * DAY },
-    { sessionId: 'b', seq: 2, text: '新的冷门', hits: 1, lastHitAt: clock, createdAt: clock - 2 * DAY },
-    { sessionId: 'c', seq: 3, text: '从没用过', hits: 0, lastHitAt: 0, createdAt: clock - 1 * DAY }
+    { sessionId: 'a', seq: 1, text: '旧的热门', used: 5, injected: 6, lastUsedAt: clock - 30 * DAY, createdAt: clock - 40 * DAY },
+    { sessionId: 'b', seq: 2, text: '新的冷门', used: 1, injected: 2, lastUsedAt: clock, createdAt: clock - 2 * DAY },
+    { sessionId: 'c', seq: 3, text: '从没用过', used: 0, injected: 9, lastUsedAt: 0, createdAt: clock - 1 * DAY }
   ],
-  { now: clock, halfLifeDays: 21, limit: 2 }
+  { now: clock, halfLifeDays: 21, limit: 2, deadAfterInjections: 3, deadWeightPenalty: 0.6 }
 )
 assert.equal(ranked.length, 2)
 assert.ok(ranked[0].weight >= ranked[1].weight)
+assert.ok(ranked.every((entry) => entry.sessionId !== 'c'), '死重不该进快照前列')
 console.log('ok · 权重排序与截断')
 
 const block = renderManagedBlock(
-  [{ sessionId: 'sess-1', seq: 42, text: '索引改成分片了', hits: 3, lastHitAt: clock - 2 * DAY, weight: 1.8 }],
+  [{ sessionId: 'sess-1', seq: 42, text: '索引改成分片了', used: 3, injected: 4, lastUsedAt: clock - 2 * DAY, weight: 1.8 }],
   { now: clock, halfLifeDays: 21, zh: true }
 )
 assert.ok(block.startsWith(MANAGED_START))
 assert.ok(block.trimEnd().endsWith(MANAGED_END))
 assert.match(block, /sess-1#42/, '每条都要带锚点')
 assert.match(block, /半衰期 21 天/)
-console.log('ok · 快照渲染（标记 + 锚点）')
+assert.match(block, /引用 3 次/)
+console.log('ok · 快照渲染（标记 + 锚点 + 引用次数）')
 
 const appended = applyManagedBlock('', block)
 assert.ok(appended.startsWith(MANAGED_START))
@@ -551,5 +582,31 @@ assert.match(nudge, /25 轮/)
 assert.match(nudge, /self_note_write/)
 assert.match(nudge, /没有就忽略/)
 console.log('ok · 自述提醒（到点才出现 / 写满不催）')
+
+/* ---------- 归因：注入 ≠ 被用到 ---------- */
+
+const memoA = { rowid: 1, text: '把索引改成分片存储，每片三千字，加 FTS 混合检索，中文用重叠二元组。' }
+const memoB = { rowid: 2, text: 'B站插件的回复语气要更短，避免长段解释。' }
+
+assert.equal(sharesVerbatim('我改成分片存储了', memoA.text, 12), false, '太短不算')
+assert.equal(sharesVerbatim('按你说的把索引改成分片存储，每片三千字，加 FTS 混合检索', memoA.text, 12), true)
+assert.equal(sharesVerbatim('今天天气不错', memoA.text, 12), false)
+
+const quoted = attributeReply('按你说的把索引改成分片存储，每片三千字，再补 FTS 混合检索。', [memoA, memoB], {})
+assert.deepEqual(quoted.used, [1], '只有被复述的那块算引用')
+
+const unrelated = attributeReply('今天先把报告写完，明天再谈。', [memoA, memoB], {})
+assert.deepEqual(unrelated.used, [], '没关系就一块都不算')
+
+const emptyReply = attributeReply('', [memoA], {})
+assert.deepEqual(emptyReply.used, [], '空回复不判定')
+
+const cappedUsed = attributeReply(
+  '把索引改成分片存储，每片三千字，加 FTS 混合检索；B站插件的回复语气要更短，避免长段解释。',
+  [memoA, memoB],
+  { maxUsed: 1 }
+)
+assert.equal(cappedUsed.used.length, 1, '单轮认领上限')
+console.log('ok · 归因（逐字重合 / 重合率 / 空回复 / 单轮上限）')
 
 console.log('\n全部单测通过')
