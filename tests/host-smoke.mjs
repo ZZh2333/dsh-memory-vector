@@ -406,6 +406,21 @@ if (hasKey) {
   assert.deepEqual(rejected, { kind: 'reject' }, '被拒绝的步骤必须原样放行')
   console.log('ok · reject 决策原样透传')
 
+  // 冷启动：换到一个一条记忆都没有的工作区
+  const emptyWorkspace = {
+    ...turnInput,
+    turn: 9,
+    agent: { session: { id: 'session-empty', header: { cwd: 'D:\\projects\\brand-new' } } },
+    messages: [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '这个项目怎么构建' }] }]
+  }
+  const coldStart = await preStep(emptyWorkspace, enter)
+  assert.equal(coldStart.messages.length, 1, '空白工作区应有一条提示')
+  assert.match(coldStart.messages[0].content[0].text, /还没有任何记忆/)
+  const againCold = await preStep(emptyWorkspace, enter)
+  const againText = againCold.messages.map((message) => message.content?.[0]?.text ?? '').join('\n')
+  assert.ok(!/还没有任何记忆/.test(againText), '同一会话不重复提醒')
+  console.log('ok · 空白工作区只提醒一次')
+
   const noise = await preStep(
     {
       ...turnInput,

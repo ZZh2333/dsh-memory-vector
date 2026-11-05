@@ -25,6 +25,7 @@ import {
   nextId,
   renderNoteNudge,
   renderNotes,
+  selectNotes,
   resolvePending,
   trimEntries,
   validateDraft
@@ -608,5 +609,26 @@ const cappedUsed = attributeReply(
 )
 assert.equal(cappedUsed.used.length, 1, '单轮认领上限')
 console.log('ok · 归因（逐字重合 / 重合率 / 空回复 / 单轮上限）')
+
+/* ---------- L4 挑条目：相关优先，不相关给兜底 ---------- */
+
+const notes = [
+  { id: 'n1', status: 'active', kind: '教训', claim: '中文检索要用重叠二元组做 FTS，否则整句匹配不上。', createdAt: 1000 },
+  { id: 'n2', status: 'active', kind: '偏好', claim: '主人偏好先给结论再给理由，聊天要短。', createdAt: 3000 },
+  { id: 'n3', status: 'active', kind: '关系', claim: '主人叫清涵，收养我的时候给了大白饭贴纸。', createdAt: 2000 },
+  { id: 'n4', status: 'archived', kind: '偏好', claim: '归档的条目不该被注入。', createdAt: 4000 }
+]
+
+const relevantNotes = selectNotes(notes, 'FTS 检索为什么匹配不上中文', { limit: 2, fallback: 2 })
+assert.equal(relevantNotes.length, 1, '只挑相关的那条')
+assert.equal(relevantNotes[0].id, 'n1')
+assert.ok(!relevantNotes.some((entry) => entry.id === 'n4'), '归档条目不参与')
+
+const irrelevantNotes = selectNotes(notes, '今天几号', { limit: 3, fallback: 2 })
+assert.equal(irrelevantNotes.length, 2, '一条都不相关时给兜底条数')
+assert.deepEqual(irrelevantNotes.map((entry) => entry.id), ['n2', 'n3'], '兜底按最近写的排')
+assert.equal(selectNotes(notes, '今天几号', { limit: 3, fallback: 0 }).length, 0, '兜底 0 = 一条都不给')
+assert.equal(selectNotes(notes, '', { limit: 0, fallback: 0 }).length, 3, 'limit 0 = 全量（旧行为）')
+console.log('ok · 自述挑选（相关优先 / 兜底 / 全量 / 归档剔除）')
 
 console.log('\n全部单测通过')

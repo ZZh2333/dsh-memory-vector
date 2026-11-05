@@ -3,7 +3,7 @@
 给 DeepSeek Harness 补上**五层记忆链的向量层**：对话原文落盘、切块向量化、关键词与向量混合召回。
 接的是火山方舟 Agent Plan 的 `doubao-embedding-vision`（`/api/plan/v3/embeddings`）。
 
-> 当前版本 **0.10.0**：L0 原文库 + 混合检索 + 每轮自动回想（P1）+ L1 跨会话桥接（P2）+ L2 长期权重（P3）+ L4 自我叙述（P4）+ L3 交付物索引（P5）+ 历史回填 + 跨工作区范围 + 注入归因与记忆体检 + 设置页 + 多套向量化模型可切换。
+> 当前版本 **0.11.0**：L0 原文库 + 混合检索 + 每轮自动回想（P1）+ L1 跨会话桥接（P2）+ L2 长期权重（P3）+ L4 自我叙述（P4）+ L3 交付物索引（P5）+ 历史回填 + 跨工作区范围 + 注入归因与记忆体检 + 空白工作区自检 + 设置页 + 多套向量化模型可切换。
 
 > **0.9.1–0.9.2 修了什么**：采集从"黑名单"改成"白名单"——只认 `source.kind === 'user'` 的用户消息。
 > 0.9.0 之前只排除 `runtime-context` / `command-result` 两种，结果插件自己的召回注入
@@ -28,6 +28,9 @@ systemPrompt.context('memory-vector:bridge') ◄── sessionQuery.readSurface(
   的用户消息插在你后面，带 `sessionId#seq` 溯源。同一轮不重复、跨轮同内容也不重复（它已经在历史里了），
   字符预算独立（`injectChars`，默认 1500）——注入的内容会永久留在会话里，所以比手动检索更省。
   关掉 `injectEnabled` 就只剩工具按需检索。
+  **空白工作区自检**：第一次在某个工作区说话、那里面一条记忆都没有时，注入里会明说一句
+  「这里我什么都没有」——否则"检索不到"和"我记得但没想起来"在我这边长一个样。
+  每个会话只提一次（`coldStartNotice`）。
 - **跨会话桥接（P2）**：新会话开场时，把上一场对话的尾巴挂进系统提示的固定位置，
   走 `systemPrompt.context` 而不是塞进消息列表——位置固定、内容恒等，前缀缓存不会被打断。
   内容只来自本机会话日志（`sessionQuery`），不外发；压缩摘要、插件注入、子智能体会话都会被剔除。
@@ -49,6 +52,9 @@ systemPrompt.context('memory-vector:bridge') ◄── sessionQuery.readSurface(
   ⚠️ 这一层**没有自我触发能力**：`noteRateTurns` 只是限速（每 N 轮最多一条），不是催写。
   所以 0.9.3 加了 `noteNudgeTurns`（默认 20）：超过 N 轮没更新，就在系统提示末尾追加一句
   「有没有可核对的新事实，要不要记一条」，约 60 字；写满 `maxNoteEntries` 就不催；设 0 关掉。
+  0.11.0 起**不再全量注入**：按与当前问题的词面重合挑 top `noteTopK`（默认 3），
+  一条都不相关时只留最近 `noteFallbackCount` 条（默认 2）——宁可少给，也不把预算铺在没人看的条目上；
+  `noteTopK = 0` 回到"全量按时间塞"。
 - **交付物索引（P5）**：监听 `tool/call`，`write` / `edit` / `str-replace-editor` 记「新建·修改」，
   `present` 记「交付」。只存路径 + `sessionId#turn` + 时间，**不读文件内容、不出本机**。
   `deliverable_search` 查；默认只看当前工作区，跨区要显式 `all: true`；
