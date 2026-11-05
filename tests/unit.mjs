@@ -39,6 +39,26 @@ assert.deepEqual(eventText({ type: 'user/message', data: { content: [{ type: 'te
 })
 assert.equal(eventText({ type: 'user/message', data: { content: [], source: { kind: 'runtime-context' } } }), null)
 assert.equal(eventText({ type: 'user/message', data: { content: [{ type: 'text', text: 'x' }], source: { kind: 'runtime-context' } } }), null)
+// 白名单：任何非 user 来源都不进记忆，尤其是我们自己的注入（否则记忆引用自己）
+assert.equal(eventText({ type: 'user/message', data: { content: [{ type: 'text', text: 'x' }], source: { kind: 'memory-vector' } } }), null)
+assert.equal(eventText({ type: 'user/message', data: { content: [{ type: 'text', text: 'x' }], source: { kind: 'compact-checkpoint' } } }), null)
+assert.equal(eventText({ type: 'user/message', data: { content: [{ type: 'text', text: 'x' }], source: { kind: 'command-result' } } }), null)
+assert.equal(eventText({ type: 'user/message', data: { content: [{ type: 'text', text: 'x' }], source: { kind: 'skill-catalog' } } }), null)
+assert.deepEqual(eventText({ type: 'user/message', data: { content: [{ type: 'text', text: '真话' }], source: { kind: 'user' } } }), {
+  role: 'user',
+  text: '真话'
+})
+assert.deepEqual(
+  eventText({
+    type: 'user/message',
+    data: {
+      content: [{ type: 'text', text: '看这个\n\n<system-reminder>\n技能目录变了\n</system-reminder>' }],
+      source: { kind: 'user' }
+    }
+  }),
+  { role: 'user', text: '看这个' },
+  'system-reminder 不算主人说的话'
+)
 assert.deepEqual(eventText({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '在' }] } } }), {
   role: 'assistant',
   text: '在'

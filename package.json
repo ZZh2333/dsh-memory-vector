@@ -1,6 +1,6 @@
 {
   "name": "dsh-memory-vector",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "private": true,
   "type": "module",
   "description": "五层记忆链的向量层：原文库落盘 + BM25/向量混合检索，接方舟 doubao-embedding-vision",
