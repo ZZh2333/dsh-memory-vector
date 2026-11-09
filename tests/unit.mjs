@@ -7,7 +7,7 @@ import { existsSync, readFileSync } from 'node:fs'
 
 import { eventText, splitChunk } from '../lib/index.js'
 import { ftsQuery, ftsText } from '../lib/store.js'
-import { selectHits } from '../lib/retrieval.js'
+import { injectDue, selectHits } from '../lib/retrieval.js'
 import { normalize, normalizeProviders, activeProvider, DEFAULTS, DEFAULT_PROVIDER } from '../lib/settings.js'
 import { messageOf, tailOf, renderBridge, collectBridge } from '../lib/bridge.js'
 import {
@@ -593,6 +593,16 @@ const localFirst = selectHits({ ...baseSelect, scope: 'workspace-first' })
 assert.deepEqual(localFirst.map((hit) => hit.rowid), [1, 3, 2], 'workspace-first 本工作区整体提前')
 assert.equal(selectHits({ ...baseSelect, scope: 'workspace', cwd: '' }).length, 3, '没有 cwd 时不瞎过滤')
 console.log('ok · 检索范围（global / workspace / workspace-first）')
+
+/* ---------- 注入节奏闸：注入后要隔 N 轮 ---------- */
+
+assert.equal(injectDue({ turn: 1, lastTurn: null, everyTurns: 2 }), true, '没注入过就允许')
+assert.equal(injectDue({ turn: 2, lastTurn: 1, everyTurns: 2 }), false, '隔 1 轮还不够')
+assert.equal(injectDue({ turn: 3, lastTurn: 1, everyTurns: 2 }), true, '隔 2 轮放行')
+assert.equal(injectDue({ turn: 2, lastTurn: 1, everyTurns: 1 }), true, '间隔 1 = 每轮都可')
+assert.equal(injectDue({ turn: 9, lastTurn: 8 }), true, '间隔默认 1')
+assert.equal(injectDue({ turn: 9, lastTurn: 8, everyTurns: 0 }), true, '非法间隔按 1 处理')
+console.log('ok · 注入节奏（间隔闸 / 默认值 / 非法值兜底）')
 
 /* ---------- L4 到点提醒 ---------- */
 

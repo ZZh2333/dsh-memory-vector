@@ -393,10 +393,17 @@ if (hasKey) {
   assert.match(injected.content[0].text, /【记忆·自动回想】/)
   assert.match(injected.content[0].text, /session-old#7/)
   console.log(`ok · pre-step 注入（${injected.content[0].text.length} 字，带 sessionId#seq 溯源）`)
+  assert.equal((await call('GET', '/state')).body.health.lastInjectReason, 'ok')
 
   const again = await preStep({ ...turnInput }, enter)
   assert.equal(again.messages.length, 0, '同一轮重复调用不应重复注入')
-  console.log('ok · 同一轮去重')
+
+  // 节奏闸：默认每 2 轮才允许一次，下一轮应被跳过
+  const nextTurn = await preStep({ ...turnInput, turn: 2 }, enter)
+  assert.equal(nextTurn.messages.length, 0, '间隔不够不应注入')
+  const gated = (await call('GET', '/state')).body.health.lastInjectReason
+  assert.equal(gated, 'skipped-interval', `应记为 skipped-interval，实际 ${gated}`)
+  console.log('ok · 注入节奏（同轮去重 + 隔轮闸）')
 
   const secondStep = await preStep({ ...turnInput, step: 2 }, enter)
   assert.equal(secondStep.messages.length, 0, '非首步不注入')
@@ -443,8 +450,9 @@ if (hasKey) {
 
   const health = (await call('GET', '/state')).body.health
   assert.ok(health.injected >= 1)
-  assert.equal(health.lastInjectReason, 'ok')
-  console.log(`ok · health 记录注入（${health.injected} 次）`)
+  // 末尾这几轮都没有真实命中，最后一条 reason 不一定是 ok；这里只确认注入确实发生过
+  assert.ok(['ok', 'no-hit', 'skipped-interval', 'empty'].includes(String(health.lastInjectReason)))
+  console.log(`ok · health 记录注入（${health.injected} 次，最近原因 ${health.lastInjectReason}）`)
 
   /* ---------- 归因：注入之后到底有没有被引用 ---------- */
 
@@ -530,8 +538,16 @@ if (hasKey) {
   const AGENT_MD = join(HOME, 'AGENT.md')
   writeFileSync(AGENT_MD, '# 你是谁\n\n我是子非鱼。\n\n# 边界\n\n不编造。\n', 'utf8')
 
+  // 默认目标已从 AGENT.md 挪走：那个文件整份进系统提示，每请求付一次钱
+  assert.equal(
+    (await call('GET', '/state')).body.settings.weightsTarget,
+    'memory/weights.md',
+    '快照默认不该写回 AGENT.md'
+  )
+
   const weightsOn = await call('POST', '/settings', {
-    settings: { ...(await call('GET', '/state')).body.settings, weightsEnabled: true }
+    // 这一组断言要验「合并进已有文件」，所以显式指回 AGENT.md
+    settings: { ...(await call('GET', '/state')).body.settings, weightsEnabled: true, weightsTarget: 'AGENT.md' }
   })
   assert.equal(weightsOn.body.settings.weightsEnabled, true)
   assert.equal(weightsOn.body.settings.weightsRefreshMode, 'daily', '默认节奏应是一天一次')
@@ -559,6 +575,18 @@ if (hasKey) {
   assert.ok(weightsState.lastAt > 0)
   assert.match(weightsState.preview, /managed:memory-weights/)
   console.log(`ok · /state 暴露权重状态（${weightsState.entries} 条）`)
+
+  // 换回默认目标：应自己建目录、写新文件，且不碰 AGENT.md
+  const agentBefore = readFileSync(AGENT_MD, 'utf8')
+  await call('POST', '/settings', {
+    settings: { ...(await call('GET', '/state')).body.settings, weightsTarget: 'memory/weights.md' }
+  })
+  await call('POST', '/weights', {})
+  const weightsFile = join(HOME, 'memory', 'weights.md')
+  assert.ok(existsSync(weightsFile), '默认目标应新建 memory/weights.md')
+  assert.match(readFileSync(weightsFile, 'utf8'), /managed:memory-weights/)
+  assert.equal(readFileSync(AGENT_MD, 'utf8'), agentBefore, 'AGENT.md 不该再被改动')
+  console.log('ok · 默认目标写进 memory/weights.md（不再碰 AGENT.md）')
 } else {
   console.log('skip · 没有 ARK_CODE_LATEST_API_KEY，跳过权重快照')
 }
