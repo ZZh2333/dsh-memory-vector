@@ -52,7 +52,17 @@ const sessionQuery = {
           type: 'assistant/message',
           seq: 2,
           time: Date.now() - 49000,
-          data: { message: { content: [{ type: 'text', text: `好，${id} 已经改完。` }] } }
+          // 这一轮要够长，否则会被 minTurnChars 滤掉（默认 60 字）：回填、桥接都靠它
+          data: {
+            message: {
+              content: [
+                {
+                  type: 'text',
+                  text: `好，${id} 已经改完：索引按段落切成 3000 字一块，检索先走 FTS 再算余弦，命中会记下 sessionId#seq 方便回溯。`
+                }
+              ]
+            }
+          }
         }
       ]
     }

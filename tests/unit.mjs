@@ -545,6 +545,27 @@ assert.equal(turnChunks[0].turn, 1)
 assert.equal(turnChunks[1].turn, 3, '太短的单轮要丢掉')
 console.log('ok · 回填按轮聚合（user+assistant 拼块 / 过短的丢掉）')
 
+// 默认门槛（0.12.1 起 24 → 60）：寒暄对不该进库，正常问答不该被误伤
+const trivialTurn = collectTurnChunks(
+  [
+    { type: 'user/message', seq: 1, data: { turn: 1, content: [{ type: 'text', text: '继续' }] } },
+    { type: 'assistant/message', seq: 2, data: { turn: 1, message: { content: [{ type: 'text', text: '好了，已推送。' }] } } },
+    { type: 'turn/end', seq: 3, data: { turn: 1 } }
+  ],
+  { textOf: fakeTextOf, maxChars: 3000, minChars: DEFAULTS.minTurnChars }
+)
+assert.equal(trivialTurn.length, 0, '「继续 + 好了」这类不该建块')
+const normalTurn = collectTurnChunks(
+  [
+    { type: 'user/message', seq: 1, data: { turn: 1, content: [{ type: 'text', text: '把权重快照从 AGENT.md 挪到 memory/weights.md' }] } },
+    { type: 'assistant/message', seq: 2, data: { turn: 1, message: { content: [{ type: 'text', text: '挪好了，权重排序不受影响，AGENT.md 现在只剩人格设定，每请求省下两千多 token。' }] } } },
+    { type: 'turn/end', seq: 3, data: { turn: 1 } }
+  ],
+  { textOf: fakeTextOf, maxChars: 3000, minChars: DEFAULTS.minTurnChars }
+)
+assert.equal(normalTurn.length, 1, '正常问答不该被门槛误伤')
+console.log(`ok · 收录门槛（默认 ${DEFAULTS.minTurnChars} 字：寒暄丢掉、正经问答保留）`)
+
 const pickable = pickSessions(
   [
     { header: { id: 's-old', cwd: 'D:\\w', createdAt: 1 } },
