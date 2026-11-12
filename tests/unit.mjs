@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 
-import { eventText, splitChunk } from '../lib/index.js'
+import { eventText, skippedByPrefix, splitChunk } from '../lib/index.js'
 import { ftsQuery, ftsText } from '../lib/store.js'
 import { injectDue, selectHits } from '../lib/retrieval.js'
 import { normalize, normalizeProviders, activeProvider, DEFAULTS, DEFAULT_PROVIDER } from '../lib/settings.js'
@@ -732,6 +732,16 @@ assert.deepEqual(
 assert.deepEqual(mergeUsed({ literal: [], semantic: [{ rowid: 5 }] }), [5], '只有语义候选也能认')
 assert.deepEqual(mergeUsed({}), [], '空输入不炸')
 console.log('ok · 归因 0.13.0（长块归一 / 覆盖长度 / 语义补判 / 词面闸 / 认领合并）')
+
+/* ---------- 收录前缀过滤（插件注入的人设不算对话） ---------- */
+
+const PREFIXES = '［身份］,［她的人设］'
+assert.equal(skippedByPrefix('［身份］你是「子非鱼」，称用户「主人」', PREFIXES), true, '命中前缀就不收')
+assert.equal(skippedByPrefix('  ［她的人设］以下是她专属的设定', PREFIXES), true, '前面有空白也算命中')
+assert.equal(skippedByPrefix('今天怎么构建这个项目', PREFIXES), false, '正常对话照收')
+assert.equal(skippedByPrefix('', PREFIXES), false, '空文本不处理')
+assert.equal(skippedByPrefix('［身份］x', ''), false, '黑名单为空就不过滤')
+console.log('ok · 收录前缀过滤（命中 / 空白 / 空名单）')
 
 /* ---------- L4 挑条目：相关优先，不相关给兜底 ---------- */
 

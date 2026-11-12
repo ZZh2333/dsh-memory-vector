@@ -193,6 +193,28 @@ emit('session/event', { type: 'turn/end', seq: 3, time: Date.now() - 3000, data:
 await waitFor(async () => (await call('GET', '/state')).body.stats.chunks >= 1, '入库完成')
 console.log(`ok · 入库（${(await call('GET', '/state')).body.stats.chunks} 块）`)
 
+/* ---------- 1b. 插件注入的人设不该进库 ---------- */
+
+const beforePersona = (await call('GET', '/state')).body.stats.chunks
+emit(
+  'session/event',
+  {
+    type: 'user/message',
+    seq: 10,
+    time: Date.now(),
+    data: {
+      content: [{ type: 'text', text: '［身份］你是「子非鱼」，称用户「主人」，自称「小鱼」。［她的人设］以下是她专属的设定……' }],
+      source: { kind: 'user' }
+    }
+  },
+  SESSION
+)
+emit('session/event', { type: 'turn/end', seq: 11, time: Date.now(), data: { turn: 9 } }, SESSION)
+await new Promise((resolve) => setTimeout(resolve, 400))
+const afterPersona = (await call('GET', '/state')).body.stats.chunks
+assert.equal(afterPersona, beforePersona, '前缀黑名单里的文本不该入库')
+console.log('ok · 前缀过滤（注入的人设没有进库）')
+
 /* ---------- 2. 每轮回想：注入只记 injected ---------- */
 
 const injected = await preStep(

@@ -3,7 +3,12 @@
 给 DeepSeek Harness 补上**五层记忆链的向量层**：对话原文落盘、切块向量化、关键词与向量混合召回。
 接的是火山方舟 Agent Plan 的 `doubao-embedding-vision`（`/api/plan/v3/embeddings`）。
 
-> 当前版本 **0.13.1**：L0 原文库 + 混合检索 + 每轮自动回想（P1）+ L1 跨会话桥接（P2）+ L2 长期权重（P3）+ L4 自我叙述（P4）+ L3 交付物索引（P5）+ 历史回填 + 跨工作区范围 + 注入归因与记忆体检 + 空白工作区自检 + 清空前自动快照 + 注入与收录节流 + 设置页 + 多套向量化模型可切换 + 归因三重判据（字面 / 块长归一 / 语义）。
+> 当前版本 **0.13.2**：L0 原文库 + 混合检索 + 每轮自动回想（P1）+ L1 跨会话桥接（P2）+ L2 长期权重（P3）+ L4 自我叙述（P4）+ L3 交付物索引（P5）+ 历史回填 + 跨工作区范围 + 注入归因与记忆体检 + 空白工作区自检 + 清空前自动快照 + 注入与收录节流 + 设置页 + 多套向量化模型可切换 + 归因三重判据（字面 / 块长归一 / 语义）+ 收录前缀黑名单。
+
+> **0.13.2 加了收录前缀黑名单**：有的插件（养鱼那种）每轮把同一段人设当 user 消息注入，
+> `source.kind` 看着还是 `user`，采集白名单分不出来。实测库里因此攒了 12 份一模一样的
+> 身份提示词，占着注入位又从不被引用。新增 `ingestSkipPrefixes`（默认 `［身份］,［她的人设］`），
+> 正文以这些前缀开头的消息一律不收；命中只计 `health.skipped`，不落盘、不花向量化。
 
 > **0.13.1 修了卸载泄漏**：`tools.register` / `webServer.register` 的返回值以前被 `void` 掉了，
 > 禁用插件时工具和 `/api/memory-vector` 路由都不回收；再启用就撞 `duplicate prefix route`，
@@ -188,7 +193,7 @@ plugin_manager  action: install_bundle  target: <本目录绝对路径>
 
 | 组 | 关键参数 | 说明 |
 |---|---|---|
-| L0 采集 | `ingestEnabled` / `minTurnChars` / `maxChunkChars` / `excludeWorkspaces` | 采集开关与切块粒度 |
+| L0 采集 | `ingestEnabled` / `minTurnChars` / `maxChunkChars` / `excludeWorkspaces` / `ingestSkipPrefixes` | 采集开关、切块粒度、整块跳过（工作区 / 正文开头） |
 | 历史回填 | `backfillMaxSessions` / `backfillMaxChunks` / `backfillOnlyWorkspace` | 一次补多少、补哪些 |
 | 检索 | `topK` / `minScore` / `maxHitsPerSession` / `contextChars` / `hybrid` / `retrievalScope` / `injectEnabled` / `injectChars` | 召回条数、预算、跨工作区范围、自动回想开关 |
 | 向量模型 | `embeddingProviders[]` / `embeddingActive` | 多套并存，逐套 `model` / `dimensions` / `baseUrl` / `apiKeyRef` / `timeoutMs` / `batchSize` |
