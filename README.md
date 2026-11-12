@@ -3,7 +3,17 @@
 给 DeepSeek Harness 补上**五层记忆链的向量层**：对话原文落盘、切块向量化、关键词与向量混合召回。
 接的是火山方舟 Agent Plan 的 `doubao-embedding-vision`（`/api/plan/v3/embeddings`）。
 
-> 当前版本 **0.12.1**：L0 原文库 + 混合检索 + 每轮自动回想（P1）+ L1 跨会话桥接（P2）+ L2 长期权重（P3）+ L4 自我叙述（P4）+ L3 交付物索引（P5）+ 历史回填 + 跨工作区范围 + 注入归因与记忆体检 + 空白工作区自检 + 清空前自动快照 + 注入与收录节流 + 设置页 + 多套向量化模型可切换。
+> 当前版本 **0.13.0**：L0 原文库 + 混合检索 + 每轮自动回想（P1）+ L1 跨会话桥接（P2）+ L2 长期权重（P3）+ L4 自我叙述（P4）+ L3 交付物索引（P5）+ 历史回填 + 跨工作区范围 + 注入归因与记忆体检 + 空白工作区自检 + 清空前自动快照 + 注入与收录节流 + 设置页 + 多套向量化模型可切换 + 归因三重判据（字面 / 块长归一 / 语义）。
+
+> **0.13.0 修了归因的三处漏洞**：以前"被引用"只有两条判据（12 连字、bigram 重合率），
+> 于是有三类误差偏偏都不小。
+> ① **手动检索免检**：`memory_search` 查到的块直接记 `used`，搜了没用也算；
+> 现在跟自动回想同口径——先记 `injected`，回复出来再判。
+> ② **长块占便宜**：块越长，能撞上的 12-gram 越多，实测被认领的块平均 1293 字，
+> 而"注入了没被认领"的平均 364 字。门槛现在按 `sqrt(块长/400)` 缩放（3000 字要 33 连字）。
+> ③ **转述全漏**：换个说法讲同一件事，字面一点不沾。现在补一层余弦（默认 0.72），
+> 另加"至少共享 6 条二连字"的闸，防止同主题的两段话互相认领。
+> 代价是每个有注入的轮次多一次向量化（约 30 token），可关。
 
 > **0.9.1–0.9.2 修了什么**：采集从"黑名单"改成"白名单"——只认 `source.kind === 'user'` 的用户消息。
 > 0.9.0 之前只排除 `runtime-context` / `command-result` 两种，结果插件自己的召回注入
@@ -39,8 +49,14 @@ systemPrompt.context('memory-vector:bridge') ◄── sessionQuery.readSurface(
   内容只来自本机会话日志（`sessionQuery`），不外发；压缩摘要、插件注入、子智能体会话都会被剔除。
 - **长期权重（P3）**：每次**真正被引用**的块才记一次「用到」（`used`）。权重 =
   `(1 + ln(1+used)) × 0.5^(天数 / 半衰期)`——用得多的记得牢，久不用的自然淡出。
-  0.10.0 起**注入 ≠ 引用**：注入只记 `injected`、不涨权重；要等这一轮回复出来，回复里逐字
-  复述了这块记忆（连续 `attributeWindow` 字，默认 12）或二连字重合率过线，才记一次 `used`。
+  0.10.0 起**注入 ≠ 引用**：注入只记 `injected`、不涨权重；要等这一轮回复出来才判。
+  0.13.0 起判据有三条，任一过线即算引用：
+  ① 逐字重合——且门槛按 `sqrt(块长/400)` 缩放（300 字要 12 连字，3000 字要 33），
+  免得长块靠"哪都能撞上 12 个连字"占便宜；
+  ② 二连字重合率过 `attributeThreshold`（默认 0.15）；
+  ③ 语义余弦过 `attributeSemanticThreshold`（默认 0.72）**且**共享 ≥6 条二连字——
+  这条专门认转述，同主题的闲聊不会互相认领。
+  手动 `memory_search` 与自动回想同一口径：查到的块也算 `injected`，不自动算引用。
   注入了 `deadAfterInjections` 次却一次没被引用的判为「死重」，权重乘 `deadWeightPenalty`
   （默认 0.6）——**只降权，不删**：删了就没法回头验证判定器是不是判错了。
   设置页「记忆体检」卡片会摆出注入利用率、死重清单和近 7 天入库曲线。
@@ -90,7 +106,7 @@ systemPrompt.context('memory-vector:bridge') ◄── sessionQuery.readSurface(
 |---|---|---|
 | 权重快照 | 每次请求，直到你把它挪走 | 3430 字 ≈ 2100 token **/请求** |
 | 自动回想注入 | 注入那一轮 **+ 之后每一轮重发** | 350 字 ≈ 230 token，累积计费 |
-| 向量化（embedding） | 只在写入和检索时 | 每轮问题约 30 token；全库一次性约 8 万 |
+| 向量化（embedding） | 只在写入、检索和语义归因时 | 每轮问题约 30 token；语义归因每轮再多一次（约 30 token，可关）；全库一次性约 8 万 |
 
 关键区别：**注入进对话的内容会一直躺在历史里**，后面每轮请求都要重发一遍。一个 20 轮会话
 若 15 轮都有注入，累计约 430×180 ≈ 7.7 万 token——均摊每轮多 4 千。所以真正该省的不是
@@ -175,6 +191,7 @@ plugin_manager  action: install_bundle  target: <本目录绝对路径>
 | L1 桥接 | `bridgeEnabled` / `bridgeScope` / `bridgeDays` / `bridgeMessages` / `bridgeChars` | 同工作区最近一场（或 N 天内最多三场）的尾巴 |
 | L3 交付物 | `deliverablesEnabled` / `deliverableTools` / `deliverableScope` / `maxDeliverables` / `deliverablesOwnerOnly` | 文件路径 + 出处，不含内容 |
 | L2 权重 | `weightsEnabled` / `halfLifeDays` / `maxEntries` / `weightsRefreshMode` / `weightsRefreshHours` / `refreshTurns` / `weightsTarget` | 艾宾浩斯权重 + 快照节奏 |
+| 归因 | `hitAttribution` / `attributeWindow` / `attributeThreshold` / `attributeMaxUsed` / `attributeLengthNormalize` / `semanticAttribution` / `attributeSemanticThreshold` / `deadAfterInjections` / `deadWeightPenalty` | 什么算"真的用到"：字面 / 重合率 / 语义三条判据 |
 | L4 自述 | `selfNoteEnabled` / `requireApproval` / `pendingTtlHours` / `maxNoteEntries` / `budgetChars` / `noteRateTurns` / `auditEvery` / `selfNoteTarget` | 带锚点的事实清单 |
 
 `bridgeScope` 支持 `workspace-latest`（同工作区最近一场）与 `recent-days`（同工作区最近 N 天内最多三场，N 可配）。
@@ -182,12 +199,13 @@ plugin_manager  action: install_bundle  target: <本目录绝对路径>
 
 `weightsRefreshMode` 三选一：`daily`（按 `weightsRefreshHours`，默认 24 小时＝一天一次）、
 `turns`（按 `refreshTurns`）、`manual`（只在设置页点「立即刷新」）。权重是慢变量，一天一次足够；
-`weightsTarget` 默认 `AGENT.md`，也可以指向别的文件。
+`weightsTarget` 默认 `memory/weights.md`，也可以指向别的文件。
 
 ## 自检
 
 ```powershell
-node tests/unit.mjs                                  # 离线：事件抽取 / 切块 / 设置收敛 / 多套模型 / 桥接渲染 / 中文分词
+node tests/unit.mjs                                  # 离线：事件抽取 / 切块 / 设置收敛 / 多套模型 / 桥接渲染 / 中文分词 / 归因纯函数
+node tests/attribution-local.mjs                     # 离线端到端：假 embedding 服务，跑通入库 → 注入 → 归因（含语义）→ 手动检索同口径
 $env:ARK_CODE_LATEST_API_KEY='...'
 node tests/host-smoke.mjs                            # 假 ctx 跑 apply()：多套模型 / 自动回想 / 桥接 / 全部同源 API（不碰真实 DSH_HOME）
 node tests/e2e.mjs                                   # 真调 /embeddings：写入 → 4 个语义查询 + 1 个专有名词查询
@@ -196,9 +214,12 @@ node tests/e2e.mjs                                   # 真调 /embeddings：写�
 ## 已知限制
 
 - 向量检索是暴力余弦（个人量级万块以内够用），没有 ANN 索引；
-- 历史会话回填（读 `session.v4.jsonl.zstd`）还没做，需要走 `sessionQuery`，排在 P3；
 - 换模型或维度后旧向量会因维度不匹配被跳过，需要清空重建；
-- L1/L2/L4 目前只有参数与占位，没有行为。
+- 归因是**事后近似**：字面判据偏保守（改写会漏），语义判据偏宽（同主题会撞），
+  两个方向的误差只能靠"注入 ≠ 引用 + 死重只降权不删"这套账兜住，不是精确判定；
+- 语义补判用的是**当前生效的那套模型**：换模型后旧块维度对不上，那部分只走字面判据；
+- 手动检索与自动回想现在同口径，所以"查了但没写进回复"的块也会累计 `injected`，
+  这些块要靠死重降权慢慢沉下去，不会立刻掉出榜。
 
 ## 设计取舍
 

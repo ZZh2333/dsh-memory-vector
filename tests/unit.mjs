@@ -33,7 +33,16 @@ import {
 } from '../lib/selfnote.js'
 import { dirOf, normalizePath, pathsFromToolCall, relativeTo, renderList } from '../lib/deliverables.js'
 import { collectTurnChunks, estimateTokens, pickSessions } from '../lib/backfill.js'
-import { attributeReply, replyOverlap, sharesVerbatim } from '../lib/attribution.js'
+import {
+  attributeReply,
+  attributeSemantic,
+  mergeUsed,
+  replyOverlap,
+  sharedGrams,
+  sharesVerbatim,
+  verbatimCoverage,
+  verbatimNeeded
+} from '../lib/attribution.js'
 
 /* ---------- 清单（这道闸是踩坑换来的） ----------
  * package.json 里多了一个 UTF-8 BOM，DSH 的 JSON.parse 会抛，
@@ -661,6 +670,68 @@ const cappedUsed = attributeReply(
 )
 assert.equal(cappedUsed.used.length, 1, '单轮认领上限')
 console.log('ok · 归因（逐字重合 / 重合率 / 空回复 / 单轮上限）')
+
+/* ---------- 归因 0.13.0：长块归一 + 语义补判 ---------- */
+
+assert.equal(verbatimNeeded(200, 12), 12, '短块不动，仍是 12')
+assert.equal(verbatimNeeded(1293, 12), 22, '1300 字要 22')
+assert.equal(verbatimNeeded(3000, 12), 33, '3000 字要 33')
+assert.equal(verbatimNeeded(3000, 12, false), 12, '关掉归一回到固定值')
+
+const longHead = '把索引改成分片存储，每片三千字，再补 FTS 混合检索和中文二元组，顺带把过长的块切开。'
+const longBlock = { rowid: 7, text: `${'甲'.repeat(1500)}${longHead}${'乙'.repeat(1400)}` }
+const shortQuote = '把索引改成分片存储，每片三千字。'
+
+assert.equal(verbatimCoverage(shortQuote, longBlock.text, 12), 15, '覆盖长度只算真正重合的那段')
+assert.equal(
+  attributeReply(shortQuote, [longBlock], { minRatio: 1 }).used.length,
+  0,
+  '长块里只撞上 15 个字不够（归一后要 33）'
+)
+assert.deepEqual(
+  attributeReply(shortQuote, [longBlock], { minRatio: 1, normalizeWindow: false }).used,
+  [7],
+  '关掉归一就退回旧行为'
+)
+assert.deepEqual(attributeReply(longHead, [longBlock], { minRatio: 1 }).used, [7], '整句复述照样认')
+
+const replyVector = new Float32Array([1, 0, 0])
+const semanticVectors = new Map([
+  [1, new Float32Array([1, 0, 0])],
+  [2, new Float32Array([0, 1, 0])]
+])
+const semanticHit = attributeSemantic({
+  reply: '把索引改成分片存储，每片三千字',
+  blocks: [memoA, memoB],
+  vectors: semanticVectors,
+  replyVector,
+  threshold: 0.8
+})
+assert.deepEqual(semanticHit.map((entry) => entry.rowid), [1], '余弦过线 + 词面有交集才算')
+
+const foreignBlock = { rowid: 9, text: '今天的天气和晚饭都很好，适合出去走走。' }
+assert.ok(sharedGrams('把索引改成分片存储，每片三千字', foreignBlock.text) < 6, '本来就没多少共同词')
+assert.deepEqual(
+  attributeSemantic({
+    reply: '把索引改成分片存储，每片三千字',
+    blocks: [foreignBlock],
+    vectors: new Map([[9, new Float32Array([1, 0, 0])]]),
+    replyVector,
+    threshold: 0.8
+  }),
+  [],
+  '余弦再高，没有词面交集也不认'
+)
+assert.deepEqual(attributeSemantic({ blocks: [memoA], vectors: semanticVectors, replyVector: null }), [], '没有回复向量就不判')
+
+assert.deepEqual(
+  mergeUsed({ literal: [3], semantic: [{ rowid: 1 }, { rowid: 3 }, { rowid: 2 }], cap: 2 }),
+  [3, 1],
+  '字面优先、不重复、守单轮上限'
+)
+assert.deepEqual(mergeUsed({ literal: [], semantic: [{ rowid: 5 }] }), [5], '只有语义候选也能认')
+assert.deepEqual(mergeUsed({}), [], '空输入不炸')
+console.log('ok · 归因 0.13.0（长块归一 / 覆盖长度 / 语义补判 / 词面闸 / 认领合并）')
 
 /* ---------- L4 挑条目：相关优先，不相关给兜底 ---------- */
 
