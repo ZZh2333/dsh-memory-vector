@@ -24,6 +24,7 @@ import {
   discardExpired,
   emptyState,
   nextId,
+  noteRateError,
   renderNoteNudge,
   renderNotes,
   selectNotes,
@@ -644,6 +645,20 @@ assert.match(nudge, /25 轮/)
 assert.match(nudge, /self_note_write/)
 assert.match(nudge, /没有就忽略/)
 console.log('ok · 自述提醒（到点才出现 / 写满不催）')
+
+/* ---------- L4 频率闸：只在同一会话内比较轮次 ---------- */
+
+const rate = (input) => noteRateError({ rate: 10, sessionId: 'session-a', ...input })
+
+assert.equal(rate({ lastSession: 'session-a', lastTurn: 88, currentTurn: 88 }), '写入太频繁：每 10 轮最多一条（本会话当前第 88 轮，上一条在第 88 轮）', '同会话同轮次要拦')
+assert.match(rate({ lastSession: 'session-a', lastTurn: 88, currentTurn: 97 }), /还差|太频繁/)
+assert.equal(rate({ lastSession: 'session-a', lastTurn: 88, currentTurn: 98 }), null, '隔满 10 轮放行')
+assert.equal(rate({ lastSession: 'session-b', lastTurn: 88, currentTurn: 3 }), null, '换会话重新计数（旧实现就死在这里）')
+assert.equal(rate({ lastSession: 'session-a', lastTurn: 0, currentTurn: 5 }), null, '从没写过就不限')
+assert.equal(rate({ lastSession: 'session-a', lastTurn: 30, currentTurn: 20 }), null, '轮次回退不拦')
+assert.equal(noteRateError({ rate: 1, sessionId: 'session-a', lastSession: 'session-a', lastTurn: 5, currentTurn: 5 }), null, 'rate ≤ 1 = 关闸')
+assert.equal(noteRateError({ rate: 10, sessionId: '', lastSession: '', lastTurn: 5, currentTurn: 5 }), null, '拿不到会话就放行')
+console.log('ok · 自述频率（同会话内比较 / 跨会话放行 / 回退放行）')
 
 /* ---------- 归因：注入 ≠ 被用到 ---------- */
 
